@@ -1,0 +1,84 @@
+apiVersion: v1
+kind: List
+items:
+  - apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: sandbox-orchestrator
+      namespace: platform
+
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: Role
+    metadata:
+      name: sandbox-pod-manager
+      namespace: sandboxes
+    rules:
+      - apiGroups: [""]
+        resources: ["pods"]
+        verbs: ["create", "get", "list", "watch", "delete"]
+      - apiGroups: [""]
+        resources: ["pods/log"]
+        verbs: ["get"]
+
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    metadata:
+      name: sandbox-orchestrator-binding
+      namespace: sandboxes
+    subjects:
+      - kind: ServiceAccount
+        name: sandbox-orchestrator
+        namespace: platform
+    roleRef:
+      kind: Role
+      name: sandbox-pod-manager
+      apiGroup: rbac.authorization.k8s.io
+
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: Role
+    metadata:
+      name: build-pod-manager
+      namespace: builds
+    rules:
+      - apiGroups: [""]
+        resources: ["pods"]
+        verbs: ["create", "get", "list", "watch", "delete"]
+      - apiGroups: [""]
+        resources: ["pods/log"]
+        verbs: ["get"]
+
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    metadata:
+      name: sandbox-orchestrator-build-binding
+      namespace: builds
+    subjects:
+      - kind: ServiceAccount
+        name: sandbox-orchestrator
+        namespace: platform
+    roleRef:
+      kind: Role
+      name: build-pod-manager
+      apiGroup: rbac.authorization.k8s.io
+
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRole
+    metadata:
+      name: runtimeclass-reader
+    rules:
+      - apiGroups: ["node.k8s.io"]
+        resources: ["runtimeclasses"]
+        verbs: ["get", "list"]
+
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRoleBinding
+    metadata:
+      name: sandbox-orchestrator-runtimeclass
+    subjects:
+      - kind: ServiceAccount
+        name: sandbox-orchestrator
+        namespace: platform
+    roleRef:
+      kind: ClusterRole
+      name: runtimeclass-reader
+      apiGroup: rbac.authorization.k8s.io

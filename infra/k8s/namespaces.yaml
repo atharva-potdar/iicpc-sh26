@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: List
+items:
+  - apiVersion: v1
+    kind: Namespace
+    metadata:
+      name: platform
+  - apiVersion: v1
+    kind: Namespace
+    metadata:
+      name: builds
+  - apiVersion: v1
+    kind: Namespace
+    metadata:
+      name: sandboxes
+  - apiVersion: v1
+    kind: Namespace
+    metadata:
+      name: bots

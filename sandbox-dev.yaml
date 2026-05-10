@@ -1,0 +1,60 @@
+images:
+  - location: "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2"
+    arch: "x86_64"
+  - location: "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-arm64.qcow2"
+    arch: "aarch64"
+
+cpus: 4
+memory: "8GiB"
+
+mountType: "virtiofs"
+mounts:
+  - location: "/home/atharva-potdar/Projects/iicpc-sh26"
+    writable: true
+
+provision:
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -eux -o pipefail
+
+      echo "Installing k3s"
+      curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--write-kubeconfig-mode 644" sh -
+
+      echo "Installing gVisor (runsc)"
+      apt-get update
+      apt-get install -y apt-transport-https ca-certificates curl gnupg
+      mkdir -p /usr/share/keyrings
+      curl -fsSL https://gvisor.dev/archive.key | gpg --dearmor -o /usr/share/keyrings/gvisor-archive-keyring.gpg
+      echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/gvisor-archive-keyring.gpg] https://storage.googleapis.com/gvisor/releases release main" | tee /etc/apt/sources.list.d/gvisor.list > /dev/null
+      apt-get update
+      apt-get install -y runsc
+
+      echo "Configuring k3s containerd for gVisor"
+      until [ -f /var/lib/rancher/k3s/agent/etc/containerd/config.toml ]; do sleep 2; done
+      cp /var/lib/rancher/k3s/agent/etc/containerd/config.toml /var/lib/rancher/k3s/agent/etc/containerd/config.toml.tmpl
+      cat <<EOF >> /var/lib/rancher/k3s/agent/etc/containerd/config.toml.tmpl
+      [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.runsc]
+        runtime_type = "io.containerd.runsc.v1"
+      EOF
+
+      echo "Restarting K3s to apply changes"
+      systemctl restart k3s
+      until k3s kubectl get nodes &> /dev/null; do sleep 2; done
+
+      echo "Registering gVisor RuntimeClass"
+      cat <<EOF | k3s kubectl apply -f -
+      apiVersion: node.k8s.io/v1
+      kind: RuntimeClass
+      metadata:
+        name: gvisor
+      handler: runsc
+      EOF
+
+      echo "Installing Helm"
+      curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-4 | bash
+
+      echo "Installing just"
+      curl -fsSL https://just.systems/install.sh | sudo bash -s -- --to /usr/local/bin
+
+      echo "Provisioning complete"
