@@ -19,12 +19,6 @@ var allowedLanguages = map[string]bool{
 	"go":   true,
 }
 
-var languageFilename = map[string]string{
-	"cpp":  "main.cpp",
-	"rust": "main.rs",
-	"go":   "main.go",
-}
-
 type Handler struct {
 	storage   *Storage
 	publisher *Publisher
@@ -45,36 +39,20 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
-func normalizeToTarGz(data []byte, language string) ([]byte, error) {
-	// Already a tar.gz
-	if len(data) > 2 && data[0] == 0x1f && data[1] == 0x8b {
-		return data, nil
+func validateTarGz(data []byte) error {
+	if len(data) < 2 || data[0] != 0x1f || data[1] != 0x8b {
+		return fmt.Errorf("not a gzip archive")
 	}
-
-	// Raw source file — wrap it in a tar.gz
-	filename := languageFilename[language]
-
-	var buf bytes.Buffer
-	gw := gzip.NewWriter(&buf)
-	tw := tar.NewWriter(gw)
-
-	if err := tw.WriteHeader(&tar.Header{
-		Name: filename,
-		Mode: 0o644,
-		Size: int64(len(data)),
-	}); err != nil {
-		return nil, fmt.Errorf("write tar header: %w", err)
+	gr, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("invalid gzip: %w", err)
 	}
-	if _, err := tw.Write(data); err != nil {
-		return nil, fmt.Errorf("write tar body: %w", err)
+	defer gr.Close()
+	tr := tar.NewReader(gr)
+	if _, err := tr.Next(); err != nil {
+		return fmt.Errorf("invalid tar: %w", err)
 	}
-	if err := tw.Close(); err != nil {
-		return nil, fmt.Errorf("close tar: %w", err)
-	}
-	if err := gw.Close(); err != nil {
-		return nil, fmt.Errorf("close gzip: %w", err)
-	}
-	return buf.Bytes(), nil
+	return nil
 }
 
 func (h *Handler) handleSubmit(w http.ResponseWriter, r *http.Request) {
@@ -110,8 +88,7 @@ func (h *Handler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	normalized, err := normalizeToTarGz(raw, language)
-	if err != nil {
+	if err := validateTarGz(raw); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid archive"})
 		return
 	}
@@ -122,8 +99,8 @@ func (h *Handler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	if err := h.storage.Upload(
 		r.Context(),
 		artifactPath,
-		bytes.NewReader(normalized),
-		int64(len(normalized)),
+		bytes.NewReader(raw),
+		int64(len(raw)),
 	); err != nil {
 		log.Printf("upload to seaweedfs: %v", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})

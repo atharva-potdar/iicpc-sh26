@@ -28,7 +28,7 @@ func main() {
 	seaweedfsEndpoint := envStr("SEAWEEDFS_ENDPOINT", "http://seaweedfs.platform.svc.cluster.local:8333")
 	redpandaBrokers := strings.Split(envStr("REDPANDA_BROKERS", "redpanda.platform.svc.cluster.local:9092"), ",")
 	port := envStr("PORT", "8080")
-	maxUploadMB := envInt64("MAX_UPLOAD_SIZE_MB", 50)
+	maxUploadMB := envInt64("MAX_UPLOAD_SIZE_MB", 128)
 
 	storage, err := NewStorage(seaweedfsEndpoint)
 	if err != nil {

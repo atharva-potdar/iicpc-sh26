@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: build-service
+  namespace: platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: build-service
+  template:
+    metadata:
+      labels:
+        app: build-service
+    spec:
+      serviceAccountName: sandbox-orchestrator
+      containers:
+        - name: build-service
+          image: build-service:dev
+          imagePullPolicy: Never
+          env:
+            - name: SEAWEEDFS_ENDPOINT
+              value: "http://seaweedfs.platform.svc.cluster.local:8333"
+            - name: REDPANDA_BROKERS
+              value: "redpanda.platform.svc.cluster.local:9092"
+            - name: BUILD_TIMEOUT_SECONDS
+              value: "120"
+            - name: MAX_LOG_BYTES
+              value: "4096"
+          resources:
+            requests:
+              memory: 64Mi
+              cpu: "100m"
+            limits:
+              memory: 256Mi
+              cpu: "500m"

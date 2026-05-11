@@ -44,6 +44,9 @@ items:
         resources: ["pods"]
         verbs: ["create", "get", "list", "watch", "delete"]
       - apiGroups: [""]
+        resources: ["pods/exec"]
+        verbs: ["create"]
+      - apiGroups: [""]
         resources: ["pods/log"]
         verbs: ["get"]
 

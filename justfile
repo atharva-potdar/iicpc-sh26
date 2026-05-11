@@ -6,7 +6,9 @@ dev-up: cluster-init build infra-up smoke-test
 
 build:
     DOCKER_BUILDKIT=1 docker build -t submission-api:dev -f services/submission-api/Dockerfile .
+    DOCKER_BUILDKIT=1 docker build -t build-service:dev -f services/build-service/Dockerfile .
     docker save submission-api:dev | sudo k3s ctr images import -
+    docker save build-service:dev | sudo k3s ctr images import -
 
 cluster-init:
     bash scripts/cluster-init.sh

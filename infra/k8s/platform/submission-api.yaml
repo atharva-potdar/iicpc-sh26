@@ -27,7 +27,7 @@ spec:
             - name: REDPANDA_BROKERS
               value: "redpanda.platform.svc.cluster.local:9092"
             - name: MAX_UPLOAD_SIZE_MB
-              value: "50"
+              value: "128"
           readinessProbe:
             httpGet:
               path: /healthz

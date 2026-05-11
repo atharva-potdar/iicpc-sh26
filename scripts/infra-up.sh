@@ -11,6 +11,7 @@ kubectl wait --for=condition=Available deployment/redpanda -n platform --timeout
 kubectl wait --for=condition=Available deployment/timescaledb -n platform --timeout=120s
 kubectl wait --for=condition=Available deployment/redis -n platform --timeout=120s
 kubectl wait --for=condition=Available deployment/submission-api -n platform --timeout=60s
+kubectl wait --for=condition=Available deployment/build-service -n platform --timeout=60s
 
 echo "==> Creating SeaweedFS bucket"
 kubectl delete pod seaweedfs-init -n platform --ignore-not-found --wait
@@ -26,10 +27,23 @@ kubectl wait --for=jsonpath='{.status.phase}'=Succeeded \
   pod/seaweedfs-init -n platform --timeout=60s
 kubectl delete pod seaweedfs-init -n platform --wait
 
+kubectl delete pod seaweedfs-init-builds -n platform --ignore-not-found --wait
+kubectl run seaweedfs-init-builds -n platform \
+  --image=amazon/aws-cli:latest \
+  --restart=Never \
+  --env="AWS_ACCESS_KEY_ID=any" \
+  --env="AWS_SECRET_ACCESS_KEY=any" \
+  --env="AWS_DEFAULT_REGION=us-east-1" \
+  --command -- aws s3 mb s3://builds \
+  --endpoint-url http://seaweedfs.platform.svc.cluster.local:8333
+kubectl wait --for=jsonpath='{.status.phase}'=Succeeded \
+  pod/seaweedfs-init-builds -n platform --timeout=60s
+kubectl delete pod seaweedfs-init-builds -n platform --wait
+
 echo "==> Creating Redpanda topics"
 kubectl delete pod rpk-topics -n platform --ignore-not-found --wait
 kubectl run rpk-topics -n platform \
-  --image=docker.redpanda.com/redpandadata/redpanda:v26.1.6 \
+  --image=docker.redpanda.com/redpandadata/redpanda:v26.1.7 \
   --restart=Never \
   --command -- /bin/bash -c "
     rpk topic create submission.lifecycle --partitions 4 --replicas 1 \
@@ -44,7 +58,7 @@ kubectl delete pod rpk-topics -n platform --wait
 echo "==> Applying TimescaleDB schema"
 kubectl delete pod tsdb-schema -n platform --ignore-not-found --wait
 kubectl run tsdb-schema -n platform \
-  --image=timescale/timescaledb:latest-pg16 \
+  --image=timescale/timescaledb:latest-pg18 \
   --restart=Never \
   --env="PGPASSWORD=iicpc" \
   --command -- psql -h timescaledb -U postgres iicpc -c "

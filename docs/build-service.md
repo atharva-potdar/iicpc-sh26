@@ -26,25 +26,29 @@ Events handled: submission.created
 2. Download artifact from SeaweedFS at `event.artifact_path`
 3. Spawn build pod in `builds` namespace:
    - Network egress denied (NetworkPolicy)
-   - Source mounted via ConfigMap or init container from SeaweedFS
+   - Pod runs `sleep infinity` as entrypoint to stay alive
    - Language-specific image and build command
    - CPU and memory limits enforced
-4. Wait for build pod to complete
-5. On success:
-   - Copy binary from pod to SeaweedFS at `builds/{submission_id}/binary`
+4. Wait for pod to reach Running phase
+5. Stream source tar.gz into pod via K8s exec API (`tar xzf -`)
+6. Execute language-specific build command via K8s exec API
+7. On success:
+   - Read binary from pod via K8s exec API
+   - Upload binary to SeaweedFS at `builds/{submission_id}/binary`
    - Publish `build.complete` event
-6. On failure:
-   - Publish `build.failed` event with reason
+8. On failure:
+   - Publish `build.failed` event with compiler output (truncated to MAX_LOG_BYTES)
+9. Delete build pod (always, regardless of outcome)
 
 ---
 
 ## Build Images and Commands
 
-| Language | Image                        | Build command                        |
-|----------|------------------------------|--------------------------------------|
-| cpp      | gcc:13-alpine                | g++ -O2 -o binary main.cpp           |
-| rust     | rust:1.77-alpine             | rustc -O -o binary main.rs           |
-| go       | golang:1.22-alpine           | go build -o binary .                 |
+| Language | Image                        | Build command                                      |
+|----------|------------------------------|----------------------------------------------------|
+| cpp      | gcc:16-alpine                | g++ -O2 -o binary main.cpp                         |
+| rust     | rust:1.95-alpine             | cargo build --release --offline                    |
+| go       | golang:1.26-alpine           | go build -mod=vendor -o binary .                   |
 
 ---
 
@@ -76,7 +80,7 @@ build.failed
 ## Configuration
 
 SEAWEEDFS_ENDPOINT    SeaweedFS S3 endpoint
-                      default: <http://seaweedfs.platform.svc.cluster.local:8333>
+                      default: http://seaweedfs.platform.svc.cluster.local:8333
 REDPANDA_BROKERS      comma-separated broker list
                       default: redpanda.platform.svc.cluster.local:9092
 BUILD_TIMEOUT_SECONDS max time to wait for a build pod to complete
