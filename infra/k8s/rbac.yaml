@@ -7,6 +7,18 @@ items:
       name: sandbox-orchestrator
       namespace: platform
 
+  - apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: build-service
+      namespace: platform
+
+  - apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: bot-orchestrator
+      namespace: platform
+
   - apiVersion: rbac.authorization.k8s.io/v1
     kind: Role
     metadata:
@@ -56,11 +68,11 @@ items:
   - apiVersion: rbac.authorization.k8s.io/v1
     kind: RoleBinding
     metadata:
-      name: sandbox-orchestrator-build-binding
+      name: build-service-binding
       namespace: builds
     subjects:
       - kind: ServiceAccount
-        name: sandbox-orchestrator
+        name: build-service
         namespace: platform
     roleRef:
       kind: Role
@@ -108,11 +120,11 @@ items:
   - apiVersion: rbac.authorization.k8s.io/v1
     kind: RoleBinding
     metadata:
-      name: sandbox-orchestrator-bots-binding
+      name: bot-orchestrator-binding
       namespace: bots
     subjects:
       - kind: ServiceAccount
-        name: sandbox-orchestrator
+        name: bot-orchestrator
         namespace: platform
     roleRef:
       kind: Role

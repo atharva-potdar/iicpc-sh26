@@ -13,7 +13,7 @@ spec:
       labels:
         app: build-service
     spec:
-      serviceAccountName: sandbox-orchestrator
+      serviceAccountName: build-service
       containers:
         - name: build-service
           image: build-service:dev
