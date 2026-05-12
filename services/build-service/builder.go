@@ -29,7 +29,7 @@ const (
 )
 
 var buildImages = map[string]string{
-	"cpp":  "gcc:16-alpine",
+	"cpp":  "gcc:16-trixie",
 	"rust": "rust:1.95-alpine",
 	"go":   "golang:1.26-alpine",
 }

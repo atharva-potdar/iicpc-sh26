@@ -46,7 +46,7 @@ Events handled: submission.created
 
 | Language | Image                        | Build command                                      |
 |----------|------------------------------|----------------------------------------------------|
-| cpp      | gcc:16-alpine                | g++ -O2 -o binary main.cpp                         |
+| cpp      | gcc:16-trixie                | g++ -O2 -o binary main.cpp                         |
 | rust     | rust:1.95-alpine             | cargo build --release --offline                    |
 | go       | golang:1.26-alpine           | go build -mod=vendor -o binary .                   |
 

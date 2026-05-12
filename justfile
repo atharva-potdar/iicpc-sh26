@@ -25,3 +25,11 @@ dev-teardown:
     kubectl delete -f infra/k8s/rbac.yaml || true
     kubectl delete -f infra/k8s/network-policies.yaml || true
     kubectl delete namespace platform builds sandboxes bots || true
+
+clean-cache:
+    docker image prune -a -f
+    sudo k3s crictl rmi --prune
+
+clean-cache-all:
+    docker image prune -a -f
+    sudo k3s crictl rmi --all

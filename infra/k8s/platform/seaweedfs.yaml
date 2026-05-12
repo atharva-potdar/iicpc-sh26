@@ -25,8 +25,9 @@ spec:
             - -master.port=9333
             - -volume.port=8080
             - -metricsPort=9324
-            - -volume.sizeLimitMB=1024
             - -master.volumeSizeLimitMB=1024
+            - -volume.max=0
+            - -master.defaultReplication=000
           ports:
             - name: s3
               containerPort: 8333
