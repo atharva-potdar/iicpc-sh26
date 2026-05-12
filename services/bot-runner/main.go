@@ -50,15 +50,28 @@ func main() {
 		bots[i] = NewBot(i, endpoint, seq)
 	}
 
-	start := time.Now()
+	// Wait for all bots to complete warmup before starting the clock
+	readyCh := make(chan struct{}, numBots)
 	var wg sync.WaitGroup
 	for _, bot := range bots {
 		wg.Add(1)
 		go func(b *Bot) {
 			defer wg.Done()
-			b.Run(ctx, duration)
+			b.Run(ctx, duration, readyCh)
 		}(bot)
 	}
+
+	log.Printf("waiting for all bots to warm up...")
+	for i := 0; i < numBots; i++ {
+		select {
+		case <-readyCh:
+		case <-ctx.Done():
+			return
+		}
+	}
+	log.Printf("all bots warmed up, starting measurement")
+	start := time.Now()
+
 	wg.Wait()
 	elapsed := time.Since(start)
 

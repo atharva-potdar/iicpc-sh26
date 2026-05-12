@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/coder/websocket"
@@ -50,7 +51,39 @@ func NewBot(id int, endpoint string, seq Sequence) *Bot {
 	}
 }
 
-func (b *Bot) Run(ctx context.Context, duration time.Duration) {
+func (b *Bot) Run(ctx context.Context, duration time.Duration, ready chan<- struct{}) {
+	// Warmup iteration — retry until connected, not counted in metrics
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		err := b.runIteration(ctx, -1)
+		if err == nil {
+			break
+		}
+		if strings.Contains(err.Error(), "connection refused") {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(500 * time.Millisecond):
+			}
+			continue
+		}
+		// Non-connection error on warmup — log and retry
+		log.Printf("bot %d warmup: %v", b.id, err)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+
+	// Signal that this bot is ready
+	if ready != nil {
+		ready <- struct{}{}
+	}
+
+	// Timed measurement phase
 	deadline := time.Now().Add(duration)
 	iteration := 0
 
@@ -61,7 +94,6 @@ func (b *Bot) Run(ctx context.Context, duration time.Duration) {
 		if err := b.runIteration(ctx, iteration); err != nil {
 			log.Printf("bot %d iter %d: %v", b.id, iteration, err)
 			b.metrics.connDrops++
-			// Brief backoff before reconnecting
 			select {
 			case <-ctx.Done():
 				return
@@ -79,15 +111,12 @@ func (b *Bot) runIteration(ctx context.Context, iteration int) error {
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
-	// pending maps order_id → pendingOrder for in-flight orders
 	pending := make(map[string]pendingOrder, len(b.seq.Steps))
-	// tagToID maps step tag → resolved order_id for cancel lookups
 	tagToID := make(map[string]string, len(b.seq.Steps))
 
 	recvCh := make(chan IncomingMessage, 64)
 	errCh := make(chan error, 1)
 
-	// Read loop — runs concurrently with the send loop
 	go func() {
 		for {
 			var msg IncomingMessage
@@ -117,11 +146,13 @@ func (b *Bot) runIteration(ctx context.Context, iteration int) error {
 			if err := wsjson.Write(ctx, conn, out); err != nil {
 				return fmt.Errorf("write step %d: %w", i, err)
 			}
-			b.metrics.ordersSent++
+			// Only record metrics in timed phase
+			if iteration >= 0 {
+				b.metrics.ordersSent++
+			}
 			pending[oid] = pendingOrder{sentAt: sentAt, tag: step.Tag}
 
-			// Collect expected responses for this step
-			if err := b.collectResponses(ctx, step, oid, sentAt, pending, recvCh, errCh); err != nil {
+			if err := b.collectResponses(ctx, step, oid, sentAt, pending, recvCh, errCh, iteration >= 0); err != nil {
 				return err
 			}
 
@@ -137,7 +168,6 @@ func (b *Bot) runIteration(ctx context.Context, iteration int) error {
 			if err := wsjson.Write(ctx, conn, out); err != nil {
 				return fmt.Errorf("write cancel step %d: %w", i, err)
 			}
-			// Wait for cancel_ack
 			if err := b.waitForCancelAck(ctx, oid, recvCh, errCh); err != nil {
 				return err
 			}
@@ -155,6 +185,7 @@ func (b *Bot) collectResponses(
 	pending map[string]pendingOrder,
 	recvCh <-chan IncomingMessage,
 	errCh <-chan error,
+	record bool,
 ) error {
 	gotAck := !step.ExpectAck
 	gotFill := !step.ExpectFill
@@ -172,33 +203,37 @@ func (b *Bot) collectResponses(
 			return fmt.Errorf("timeout waiting for responses to order %s", oid)
 		case msg := <-recvCh:
 			if msg.OrderID != oid {
-				// Not for this order — could be a fill for a previously
-				// resting order. Record fill latency if we have it pending.
-				if p, ok := pending[msg.OrderID]; ok && msg.Type == "fill" {
+				if p, ok := pending[msg.OrderID]; ok && msg.Type == "fill" && record {
 					b.metrics.recordFill(time.Since(p.sentAt))
 				}
 				continue
 			}
 			switch msg.Type {
 			case "ack":
-				b.metrics.recordAck(time.Since(sentAt))
-				b.metrics.acksRecv++
+				if record {
+					b.metrics.recordAck(time.Since(sentAt))
+					b.metrics.acksRecv++
+				}
 				gotAck = true
 			case "fill":
-				b.metrics.recordFill(time.Since(sentAt))
-				b.metrics.fillsRecv++
+				if record {
+					b.metrics.recordFill(time.Since(sentAt))
+					b.metrics.fillsRecv++
+				}
 				if msg.Remaining == 0 {
 					gotFill = true
 					delete(pending, oid)
 				}
 			case "reject":
-				b.metrics.rejectsRecv++
+				if record {
+					b.metrics.rejectsRecv++
+				}
 				if step.ExpectReject && msg.Reason == step.RejectReason {
 					gotReject = true
 				} else if !step.ExpectReject {
 					return fmt.Errorf("unexpected reject for %s: %s", oid, msg.Reason)
 				}
-				gotFill = true // reject is terminal, no fill coming
+				gotFill = true
 				delete(pending, oid)
 			}
 		}
