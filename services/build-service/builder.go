@@ -1,11 +1,15 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"fmt"
 	"io"
 	"log"
+	"path"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -249,8 +253,42 @@ func (b *Builder) waitForPodRunning(ctx context.Context, name string) error {
 	return fmt.Errorf("watch closed before pod became running")
 }
 
+// validateTarGz checks if the tarball contains malicious paths or symlinks
+func validateTarGz(tarGz []byte) error {
+	gz, err := gzip.NewReader(bytes.NewReader(tarGz))
+	if err != nil {
+		return fmt.Errorf("invalid gzip: %w", err)
+	}
+	defer gz.Close()
+
+	tr := tar.NewReader(gz)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("tar read error: %w", err)
+		}
+
+		if hdr.Typeflag == tar.TypeSymlink || hdr.Typeflag == tar.TypeLink {
+			return fmt.Errorf("links not allowed: %s", hdr.Name)
+		}
+
+		cleanPath := path.Clean(hdr.Name)
+		if path.IsAbs(cleanPath) || strings.HasPrefix(cleanPath, "../") || cleanPath == ".." {
+			return fmt.Errorf("malicious path detected: %s", hdr.Name)
+		}
+	}
+	return nil
+}
+
 // injectSource streams the tar.gz into the pod and extracts it to /workspace.
 func (b *Builder) injectSource(ctx context.Context, podName string, tarGz []byte) error {
+	if err := validateTarGz(tarGz); err != nil {
+		return fmt.Errorf("invalid archive: %w", err)
+	}
+
 	cmd := []string{"tar", "xzf", "-", "-C", "/workspace"}
 	var stdout, stderr bytes.Buffer
 
