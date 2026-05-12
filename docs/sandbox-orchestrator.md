@@ -48,7 +48,7 @@ Events handled: build.complete
 ## Sandbox Pod Spec
 
 Runtime:        gvisor (runsc)
-Image:          alpine:3.26 (minimal base — binary is injected)
+Image:          alpine:3.23 (minimal base — binary is injected)
 Entrypoint:     sleep infinity (kept alive for binary injection)
 Working dir:    /sandbox
 Ports:          8080 (HTTP), 8081 (WebSocket)

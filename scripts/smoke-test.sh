@@ -58,6 +58,7 @@ check "Redis running" kubectl get pod -n platform -l app.kubernetes.io/name=redi
 check "SeaweedFS running" kubectl get pod -n platform -l app=seaweedfs --field-selector=status.phase=Running
 check "submission-api running" kubectl get pod -n platform -l app=submission-api --field-selector=status.phase=Running
 check "build-service running" kubectl get pod -n platform -l app=build-service --field-selector=status.phase=Running
+check "sandbox-orchestrator running" kubectl get pod -n platform -l app=sandbox-orchestrator --field-selector=status.phase=Running
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

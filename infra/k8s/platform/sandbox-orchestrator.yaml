@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sandbox-orchestrator
+  namespace: platform
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sandbox-orchestrator
+  template:
+    metadata:
+      labels:
+        app: sandbox-orchestrator
+    spec:
+      serviceAccountName: sandbox-orchestrator
+      containers:
+        - name: sandbox-orchestrator
+          image: sandbox-orchestrator:dev
+          imagePullPolicy: Never
+          env:
+            - name: SEAWEEDFS_ENDPOINT
+              value: "http://seaweedfs.platform.svc.cluster.local:8333"
+            - name: REDPANDA_BROKERS
+              value: "redpanda.platform.svc.cluster.local:9092"
+            - name: SANDBOX_TIMEOUT_SECONDS
+              value: "60"
+            - name: MAX_LOG_BYTES
+              value: "4096"
+            - name: HEALTH_CHECK_INTERVAL
+              value: "2s"
+            - name: HEALTH_CHECK_RETRIES
+              value: "15"
+          resources:
+            requests:
+              memory: 64Mi
+              cpu: "100m"
+            limits:
+              memory: 256Mi
+              cpu: "500m"
