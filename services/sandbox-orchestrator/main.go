@@ -42,8 +42,6 @@ func main() {
 	redpandaBrokers := strings.Split(envStr("REDPANDA_BROKERS", "redpanda.platform.svc.cluster.local:9092"), ",")
 	sandboxTimeout := envInt("SANDBOX_TIMEOUT_SECONDS", 60)
 	maxLogBytes := envInt("MAX_LOG_BYTES", 4096)
-	healthInterval := envDuration("HEALTH_CHECK_INTERVAL", 2*time.Second)
-	healthRetries := envInt("HEALTH_CHECK_RETRIES", 15)
 
 	publisher, err := NewPublisher(redpandaBrokers)
 	if err != nil {
@@ -51,7 +49,7 @@ func main() {
 	}
 	defer publisher.Close()
 
-	orchestrator, err := NewOrchestrator(seaweedfsEndpoint, sandboxTimeout, maxLogBytes, healthInterval, healthRetries)
+	orchestrator, err := NewOrchestrator(seaweedfsEndpoint, sandboxTimeout, maxLogBytes)
 	if err != nil {
 		log.Fatalf("init orchestrator: %v", err)
 	}

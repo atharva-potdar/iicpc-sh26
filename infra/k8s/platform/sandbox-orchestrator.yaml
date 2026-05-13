@@ -27,10 +27,6 @@ spec:
               value: "60"
             - name: MAX_LOG_BYTES
               value: "4096"
-            - name: HEALTH_CHECK_INTERVAL
-              value: "2s"
-            - name: HEALTH_CHECK_RETRIES
-              value: "15"
           resources:
             requests:
               memory: 64Mi

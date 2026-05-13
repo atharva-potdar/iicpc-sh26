@@ -23,40 +23,36 @@ Events handled: build.complete
 ## Deployment Flow
 
 1. Consume `build.complete` event
-2. Download binary from SeaweedFS at `event.binary_path`
-3. Create sandbox pod in `sandboxes` namespace:
+2. Create sandbox pod in `sandboxes` namespace:
    - RuntimeClass: `gvisor` (runsc)
    - Network ingress allowed only from `bots` namespace (NetworkPolicy)
    - Network egress denied (NetworkPolicy)
-   - Binary injected via K8s exec API
+   - InitContainer downloads binary directly from SeaweedFS to an EmptyDir
    - Exposes ports 8080 (HTTP) and 8081 (WebSocket)
-   - CPU and memory limits enforced
-4. Wait for pod to reach Running phase
-5. Stream binary into pod via K8s exec API
-6. Mark binary as executable (`chmod +x`)
-7. Execute binary in background
-8. Health check: poll `GET /healthz` until 200 or timeout
-9. On success:
+   - Guaranteed QoS (CPU and memory limits = requests)
+3. Wait for pod to reach Running phase and Ready condition (via native ReadinessProbe)
+4. On success:
    - Publish `sandbox.ready` event with pod IP and ports
-10. On failure:
-    - Collect pod logs (truncated to MAX_LOG_BYTES)
-    - Publish `sandbox.failed` event with reason
-    - Delete sandbox pod
+5. On failure:
+   - Collect pod logs (truncated to MAX_LOG_BYTES)
+   - Publish `sandbox.failed` event with reason
+   - Delete sandbox pod
 
 ---
 
 ## Sandbox Pod Spec
 
 Runtime:        gvisor (runsc)
-Image:          alpine:3.23 (minimal base — binary is injected)
-Entrypoint:     sleep infinity (kept alive for binary injection)
+InitContainer:  alpine:3.23 (downloads binary via wget from SeaweedFS)
+Main Container: alpine:3.23 (executes the downloaded binary natively)
 Working dir:    /sandbox
 Ports:          8080 (HTTP), 8081 (WebSocket)
+Probes:         ReadinessProbe on HTTP 8080 /healthz
 
-Resource Limits:
-  CPU request:    500m
+Resource Limits (Guaranteed QoS):
+  CPU request:    2
   CPU limit:      2
-  Memory request: 256Mi
+  Memory request: 1Gi
   Memory limit:   1Gi
 
 Volume:
@@ -101,10 +97,6 @@ SANDBOX_TIMEOUT_SECONDS max time to wait for sandbox pod to become healthy
                         default: 60
 MAX_LOG_BYTES           max pod log output captured on failure
                         default: 4096
-HEALTH_CHECK_INTERVAL   interval between /healthz polls
-                        default: 2s
-HEALTH_CHECK_RETRIES    max number of /healthz attempts before giving up
-                        default: 15
 
 ---
 

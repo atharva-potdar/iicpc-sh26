@@ -56,3 +56,22 @@ items:
               port: 53
             - protocol: TCP
               port: 53
+  - apiVersion: networking.k8s.io/v1
+    kind: NetworkPolicy
+    metadata:
+      name: allow-seaweedfs-egress
+      namespace: sandboxes
+    spec:
+      podSelector: {}
+      policyTypes: [Egress]
+      egress:
+        - to:
+            - namespaceSelector:
+                matchLabels:
+                  kubernetes.io/metadata.name: platform
+              podSelector:
+                matchLabels:
+                  app: seaweedfs
+          ports:
+            - protocol: TCP
+              port: 8333
