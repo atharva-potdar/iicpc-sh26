@@ -12,17 +12,13 @@ const (
 )
 
 type Step struct {
-	Kind         StepKind
-	Side         string
-	OrderType    string
-	Price        float64
-	Quantity     int64
-	ExpectAck    bool
-	ExpectFill   bool
-	ExpectReject bool
-	RejectReason string
-	Tag          string
-	CancelTag    string
+	Kind      StepKind
+	Side      string
+	OrderType string
+	Price     float64
+	Quantity  int64
+	Tag       string
+	CancelTag string
 }
 
 type Sequence struct {
@@ -61,17 +57,14 @@ func basicMatch(botID int) Sequence {
 				OrderType: "limit",
 				Price:     p,
 				Quantity:  10,
-				ExpectAck: true,
 			},
 			{
-				Kind:       StepOrder,
-				Tag:        "ask1",
-				Side:       "sell",
-				OrderType:  "limit",
-				Price:      p,
-				Quantity:   10,
-				ExpectAck:  true,
-				ExpectFill: true,
+				Kind:      StepOrder,
+				Tag:       "ask1",
+				Side:      "sell",
+				OrderType: "limit",
+				Price:     p,
+				Quantity:  10,
 			},
 		},
 	}
@@ -89,7 +82,6 @@ func partialFillLadder(botID int) Sequence {
 				OrderType: "limit",
 				Price:     p,
 				Quantity:  5,
-				ExpectAck: true,
 			},
 			{
 				Kind:      StepOrder,
@@ -98,7 +90,6 @@ func partialFillLadder(botID int) Sequence {
 				OrderType: "limit",
 				Price:     p - 1,
 				Quantity:  5,
-				ExpectAck: true,
 			},
 			{
 				Kind:      StepOrder,
@@ -107,16 +98,13 @@ func partialFillLadder(botID int) Sequence {
 				OrderType: "limit",
 				Price:     p - 2,
 				Quantity:  5,
-				ExpectAck: true,
 			},
 			{
-				Kind:       StepOrder,
-				Tag:        "sweep",
-				Side:       "sell",
-				OrderType:  "market",
-				Quantity:   15,
-				ExpectAck:  true,
-				ExpectFill: true,
+				Kind:      StepOrder,
+				Tag:       "sweep",
+				Side:      "sell",
+				OrderType: "market",
+				Quantity:  15,
 			},
 		},
 	}
@@ -134,7 +122,6 @@ func cancelCorrectness(botID int) Sequence {
 				OrderType: "limit",
 				Price:     p,
 				Quantity:  10,
-				ExpectAck: true,
 			},
 			{
 				Kind:      StepCancel,
@@ -147,7 +134,6 @@ func cancelCorrectness(botID int) Sequence {
 				OrderType: "limit",
 				Price:     p,
 				Quantity:  10,
-				ExpectAck: true,
 			},
 			{
 				Kind:      StepCancel,

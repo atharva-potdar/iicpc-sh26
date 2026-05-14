@@ -20,10 +20,10 @@ type EventScorePair struct {
 }
 
 type Ingester struct {
-	db                 *pgxpool.Pool
-	redis              *redis.Client
-	maxAcceptableP90US float64
-	maxAcceptableTPS   float64
+	db                   *pgxpool.Pool
+	redis                *redis.Client
+	maxAcceptableLatencyUS float64 // ceiling for the weighted p50/p90/p99 score
+	maxAcceptableTPS     float64
 
 	mu          sync.Mutex
 	eventBuffer []EventScorePair
@@ -31,7 +31,7 @@ type Ingester struct {
 	closeCh     chan struct{}
 }
 
-func NewIngester(dsn, redisAddr string, maxP90US, maxTPS float64) (*Ingester, error) {
+func NewIngester(dsn, redisAddr string, maxLatencyUS, maxTPS float64) (*Ingester, error) {
 	db, err := pgxpool.New(context.Background(), dsn)
 	if err != nil {
 		return nil, fmt.Errorf("create pgxpool: %w", err)
@@ -42,13 +42,13 @@ func NewIngester(dsn, redisAddr string, maxP90US, maxTPS float64) (*Ingester, er
 	})
 
 	ingester := &Ingester{
-		db:                 db,
-		redis:              rdb,
-		maxAcceptableP90US: maxP90US,
-		maxAcceptableTPS:   maxTPS,
-		eventBuffer:        make([]EventScorePair, 0, 1000),
-		flushTicker:        time.NewTicker(500 * time.Millisecond),
-		closeCh:            make(chan struct{}),
+		db:                   db,
+		redis:                rdb,
+		maxAcceptableLatencyUS: maxLatencyUS,
+		maxAcceptableTPS:     maxTPS,
+		eventBuffer:          make([]EventScorePair, 0, 1000),
+		flushTicker:          time.NewTicker(500 * time.Millisecond),
+		closeCh:              make(chan struct{}),
 	}
 
 	go ingester.flushLoop()
@@ -110,7 +110,7 @@ func (i *Ingester) writeBatch(ctx context.Context, pairs []EventScorePair) error
 				composite   = EXCLUDED.composite,
 				scored_at   = EXCLUDED.scored_at
 		`, p.Event.SubmissionID, p.Event.TeamName, p.Event.AckP50US, p.Event.AckP90US, p.Event.AckP99US, p.Event.TPS,
-			1.0-(float64(p.Event.RejectsRecv)/math.Max(1, float64(p.Event.OrdersSent))), p.Score, time.Now())
+			p.Event.CorrectnessScore, p.Score, time.Now())
 	}
 
 	br := i.db.SendBatch(ctx, batch)
@@ -141,37 +141,27 @@ func (i *Ingester) Handle(ctx context.Context, event BotMetricsEvent) {
 		event.SubmissionID, score, event.TPS, event.AckP90US)
 }
 
-func (i *Ingester) writeTelemetry(ctx context.Context, event BotMetricsEvent) error {
-	_, err := i.db.Exec(
-		ctx, `
-		INSERT INTO telemetry_events
-			(time, submission_id, bot_id, event_type, latency_us, order_id)
-		VALUES
-			($1, $2, $3, $4, $5, NULL)
-	`,
-		time.Unix(0, event.EmittedAt),
-		event.SubmissionID,
-		event.TestRunID,
-		"bot.metrics",
-		event.AckP90US,
-	)
-	return err
-}
 
 func (i *Ingester) computeScore(event BotMetricsEvent) float64 {
-	latencyScore := 1.0 - (float64(event.AckP90US) / i.maxAcceptableP90US)
+	// Latency score: weighted combination of p50/p90/p99 acknowledgment latencies.
+	// p99 carries the most weight (0.5) because tail latency is the primary
+	// discriminator between submissions under load.
+	weightedLatencyUS := float64(event.AckP50US)*0.2 +
+		float64(event.AckP90US)*0.3 +
+		float64(event.AckP99US)*0.5
+	latencyScore := 1.0 - (weightedLatencyUS / i.maxAcceptableLatencyUS)
 	latencyScore = math.Max(0, math.Min(1, latencyScore))
 
+	// Throughput score: sustained TPS relative to the platform ceiling.
 	throughputScore := event.TPS / i.maxAcceptableTPS
 	throughputScore = math.Max(0, math.Min(1, throughputScore))
 
-	correctnessScore := 1.0
-	if event.OrdersSent > 0 {
-		correctnessScore = 1.0 - (float64(event.RejectsRecv) / float64(event.OrdersSent))
-		correctnessScore = math.Max(0, math.Min(1, correctnessScore))
-	}
+	// Correctness score: validated orderbook integrity from GET /orderbook.
+	// Sent by the bot-runner after the quiet-period snapshot.
+	correctnessScore := math.Max(0, math.Min(1, event.CorrectnessScore))
 
-	return (latencyScore * 0.4) + (throughputScore * 0.4) + (correctnessScore * 0.2)
+	// Composite: Speed 35% | Throughput 35% | Correctness 30%
+	return (latencyScore * 0.35) + (throughputScore * 0.35) + (correctnessScore * 0.30)
 }
 
 // leaderboardEntry is the enriched payload written to both the pub/sub channel
@@ -203,11 +193,7 @@ func (i *Ingester) updateLeaderboard(ctx context.Context, event BotMetricsEvent,
 		return err
 	}
 
-	correctness := 1.0
-	if event.OrdersSent > 0 {
-		correctness = 1.0 - (float64(event.RejectsRecv) / float64(event.OrdersSent))
-		correctness = math.Max(0, math.Min(1, correctness))
-	}
+	correctness := math.Max(0, math.Min(1, event.CorrectnessScore))
 
 	entry := leaderboardEntry{
 		SubmissionID: event.SubmissionID,

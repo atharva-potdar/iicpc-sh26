@@ -105,7 +105,7 @@ func (o *Orchestrator) runTest(ctx context.Context, event SandboxReadyEvent) err
 							},
 							Resources: corev1.ResourceRequirements{
 								Requests: corev1.ResourceList{
-									corev1.ResourceCPU:    mustParseQuantity("500m"),
+									corev1.ResourceCPU:    mustParseQuantity("100m"),
 									corev1.ResourceMemory: mustParseQuantity("512Mi"),
 								},
 								Limits: corev1.ResourceList{
