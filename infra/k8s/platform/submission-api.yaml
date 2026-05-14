@@ -48,9 +48,11 @@ metadata:
   name: submission-api
   namespace: platform
 spec:
+  type: NodePort
   selector:
     app: submission-api
   ports:
     - name: http
       port: 8080
       targetPort: 8080
+      nodePort: 30080

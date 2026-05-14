@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>IICPC — Live Leaderboard</title>
+  <meta name="description"
+    content="Real-time stress test leaderboard ranking contestants by speed, stability, and algorithmic accuracy." />
+  <style>
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+      color: #111;
+      background: #fff;
+      padding: 32px 40px;
+    }
+
+    header {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      border-bottom: 1px solid #e0e0e0;
+      padding-bottom: 12px;
+      margin-bottom: 24px;
+    }
+
+    h1 {
+      font-size: 16px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+    }
+
+    #status {
+      font-size: 12px;
+      color: #666;
+    }
+
+    #status-dot {
+      display: inline-block;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #ccc;
+      margin-right: 5px;
+      vertical-align: middle;
+    }
+
+    #status.live #status-dot {
+      background: #22c55e;
+    }
+
+    #status.offline #status-dot {
+      background: #ef4444;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    th,
+    td {
+      text-align: left;
+      padding: 9px 12px;
+      border-bottom: 1px solid #e8e8e8;
+    }
+
+    th {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: #666;
+    }
+
+    tr.data-row {
+      cursor: pointer;
+    }
+
+    tr.data-row:hover td {
+      background: #f7f7f7;
+    }
+
+    tr.data-row.expanded td {
+      background: #f7f7f7;
+    }
+
+    @keyframes flash {
+      from {
+        background: #fef9c3;
+      }
+
+      to {
+        background: transparent;
+      }
+    }
+
+    tr.flash td {
+      animation: flash 1s ease-out forwards;
+    }
+
+    tr.expanded.flash td {
+      animation: none;
+    }
+
+    td.rank {
+      color: #888;
+      width: 40px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    td.score {
+      font-variant-numeric: tabular-nums;
+      font-weight: 500;
+    }
+
+    td.ts {
+      color: #888;
+      font-size: 12px;
+      font-family: monospace;
+    }
+
+    /* Detail row */
+    tr.detail-row td {
+      padding: 0;
+    }
+
+    .detail-panel {
+      display: none;
+      padding: 12px 12px 16px 52px;
+      background: #fafafa;
+      border-bottom: 1px solid #e8e8e8;
+    }
+
+    tr.detail-row.open .detail-panel {
+      display: block;
+    }
+
+    .detail-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+      gap: 12px 24px;
+      margin-top: 8px;
+    }
+
+    .metric dt {
+      font-size: 11px;
+      color: #888;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      margin-bottom: 2px;
+    }
+
+    .metric dd {
+      font-size: 14px;
+      font-family: monospace;
+    }
+
+    .empty {
+      padding: 48px 0;
+      text-align: center;
+      color: #888;
+      font-size: 13px;
+    }
+
+    footer {
+      margin-top: 32px;
+      font-size: 11px;
+      color: #aaa;
+    }
+  </style>
+</head>
+
+<body>
+
+  <header>
+    <h1>IICPC — Live Leaderboard</h1>
+    <div id="status" class="offline">
+      <span id="status-dot"></span>
+      <span id="status-text">Connecting…</span>
+      &nbsp;·&nbsp;
+      <span id="team-count">0</span> teams
+    </div>
+  </header>
+
+  <div id="board">
+    <div class="empty">Waiting for submissions…</div>
+  </div>
+
+  <script>
+    'use strict';
+
+    const entries = new Map();
+    let expandedId = null;
+    let wsRetryMs = 1000;
+
+    // ── Formatting ─────────────────────────────────────────────────────────────
+    function fmtScore(s) { return (s * 100).toFixed(2) + '%'; }
+    function fmtUs(us) {
+      if (!us) return '—';
+      return us >= 1000 ? (us / 1000).toFixed(2) + ' ms' : us + ' µs';
+    }
+    function fmtTPS(v) { return v ? v.toLocaleString('en-US', { maximumFractionDigits: 0 }) : '—'; }
+    function fmtDur(ms) { return ms ? (ms / 1000).toFixed(1) + 's' : '—'; }
+    function fmtTs(ts) { return ts ? ts.replace('T', ' ').replace('Z', ' UTC') : '—'; }
+    function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+
+    // ── Render ─────────────────────────────────────────────────────────────────
+    function render() {
+      const sorted = [...entries.values()].sort((a, b) => b.score - a.score);
+      sorted.forEach((e, i) => { e.rank = i + 1; });
+
+      document.getElementById('team-count').textContent = sorted.length;
+
+      const board = document.getElementById('board');
+
+      if (sorted.length === 0) {
+        board.innerHTML = '<div class="empty">Waiting for submissions…</div>';
+        return;
+      }
+
+      const rows = sorted.map(e => `
+    <tr class="data-row" data-id="${e.submission_id}" id="row-${e.submission_id}">
+      <td class="rank">${e.rank}</td>
+      <td>${esc(e.team_name || 'Unknown')}</td>
+      <td class="score">${fmtScore(e.score)}</td>
+      <td class="ts">${fmtTs(e.timestamp)}</td>
+    </tr>
+    <tr class="detail-row" id="detail-${e.submission_id}">
+      <td colspan="4">
+        <div class="detail-panel">
+          ${detailHTML(e)}
+        </div>
+      </td>
+    </tr>`).join('');
+
+      const prev = expandedId;
+      board.innerHTML = `<table>
+    <thead><tr>
+      <th style="width:40px">#</th>
+      <th>Team</th>
+      <th style="width:80px">Score</th>
+      <th>Last updated</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+
+      board.querySelectorAll('tr.data-row').forEach(row => {
+        row.addEventListener('click', () => toggleDetail(row.dataset.id));
+      });
+
+      if (prev && entries.has(prev)) {
+        openDetail(prev);
+      }
+    }
+
+    function detailHTML(e) {
+      const correctPct = e.correctness != null ? (e.correctness * 100).toFixed(2) + '%' : '—';
+      const rejectInfo = e.orders_sent ? `${(e.rejects_recv || 0).toLocaleString()} / ${e.orders_sent.toLocaleString()} orders` : '—';
+      return `<dl class="detail-grid">
+    <div class="metric"><dt>TPS</dt><dd>${fmtTPS(e.tps)}</dd></div>
+    <div class="metric"><dt>Ack P50</dt><dd>${fmtUs(e.ack_p50_us)}</dd></div>
+    <div class="metric"><dt>Ack P90</dt><dd>${fmtUs(e.ack_p90_us)}</dd></div>
+    <div class="metric"><dt>Ack P99</dt><dd>${fmtUs(e.ack_p99_us)}</dd></div>
+    <div class="metric"><dt>Correctness</dt><dd>${correctPct}</dd></div>
+    <div class="metric"><dt>Rejects</dt><dd>${rejectInfo}</dd></div>
+    <div class="metric"><dt>Duration</dt><dd>${fmtDur(e.duration_ms)}</dd></div>
+    <div class="metric"><dt>Submission ID</dt><dd style="word-break:break-all;font-size:11px">${esc(e.submission_id || '—')}</dd></div>
+  </dl>`;
+    }
+
+    // ── Detail expand / collapse ───────────────────────────────────────────────
+    function toggleDetail(id) {
+      if (expandedId === id) { closeDetail(id); expandedId = null; return; }
+      if (expandedId) closeDetail(expandedId);
+      openDetail(id);
+      expandedId = id;
+    }
+    function openDetail(id) {
+      document.getElementById('row-' + id)?.classList.add('expanded');
+      document.getElementById('detail-' + id)?.classList.add('open');
+    }
+    function closeDetail(id) {
+      document.getElementById('row-' + id)?.classList.remove('expanded');
+      document.getElementById('detail-' + id)?.classList.remove('open');
+    }
+
+    // ── Update / snapshot ──────────────────────────────────────────────────────
+    function applyUpdate(entry) {
+      entries.set(entry.submission_id, entry);
+      render();
+      const row = document.getElementById('row-' + entry.submission_id);
+      if (row && !row.classList.contains('expanded')) {
+        row.classList.remove('flash');
+        void row.offsetWidth;
+        row.classList.add('flash');
+        row.addEventListener('animationend', () => row.classList.remove('flash'), { once: true });
+      }
+    }
+    function applySnapshot(arr) {
+      entries.clear();
+      (arr || []).forEach(e => entries.set(e.submission_id, e));
+      render();
+    }
+
+    // ── Status ─────────────────────────────────────────────────────────────────
+    function setStatus(state, text) {
+      document.getElementById('status').className = state;
+      document.getElementById('status-text').textContent = text;
+    }
+
+    // ── WebSocket ──────────────────────────────────────────────────────────────
+    function connect() {
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const ws = new WebSocket(`${proto}//${location.host}/ws`);
+      setStatus('offline', 'Connecting…');
+
+      ws.addEventListener('open', () => { setStatus('live', 'Live'); wsRetryMs = 1000; });
+      ws.addEventListener('message', ev => {
+        let msg; try { msg = JSON.parse(ev.data); } catch { return; }
+        if (msg.type === 'snapshot') applySnapshot(msg.entries);
+        else if (msg.submission_id) applyUpdate(msg);
+      });
+      ws.addEventListener('close', () => {
+        setStatus('offline', 'Disconnected');
+        setTimeout(() => { wsRetryMs = Math.min(wsRetryMs * 2, 30000); connect(); }, wsRetryMs);
+      });
+      ws.addEventListener('error', () => ws.close());
+    }
+
+    // ── Bootstrap ──────────────────────────────────────────────────────────────
+    (async function init() {
+      try {
+        const res = await fetch('/api/leaderboard');
+        if (res.ok) applySnapshot(await res.json());
+      } catch { }
+      connect();
+    })();
+  </script>
+</body>
+
+</html>

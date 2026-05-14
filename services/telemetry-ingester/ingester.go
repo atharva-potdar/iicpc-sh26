@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"math"
@@ -173,6 +174,25 @@ func (i *Ingester) computeScore(event BotMetricsEvent) float64 {
 	return (latencyScore * 0.4) + (throughputScore * 0.4) + (correctnessScore * 0.2)
 }
 
+// leaderboardEntry is the enriched payload written to both the pub/sub channel
+// and the leaderboard_details hash. It carries enough data for the frontend to
+// render both the summary row and the expanded metrics panel without hitting
+// TimescaleDB.
+type leaderboardEntry struct {
+	SubmissionID string  `json:"submission_id"`
+	TeamName     string  `json:"team_name"`
+	Score        float64 `json:"score"`
+	TPS          float64 `json:"tps"`
+	AckP50US     int64   `json:"ack_p50_us"`
+	AckP90US     int64   `json:"ack_p90_us"`
+	AckP99US     int64   `json:"ack_p99_us"`
+	OrdersSent   int64   `json:"orders_sent"`
+	RejectsRecv  int64   `json:"rejects_recv"`
+	Correctness  float64 `json:"correctness"`
+	DurationMS   int64   `json:"duration_ms"`
+	Timestamp    string  `json:"timestamp"`
+}
+
 func (i *Ingester) updateLeaderboard(ctx context.Context, event BotMetricsEvent, score float64) error {
 	member := fmt.Sprintf("%s:%s", event.SubmissionID, event.TeamName)
 	err := i.redis.ZAdd(ctx, "leaderboard", redis.Z{
@@ -183,7 +203,38 @@ func (i *Ingester) updateLeaderboard(ctx context.Context, event BotMetricsEvent,
 		return err
 	}
 
-	payload := fmt.Sprintf(`{"submission_id": "%s", "team_name": "%s", "score": %.4f}`, event.SubmissionID, event.TeamName, score)
+	correctness := 1.0
+	if event.OrdersSent > 0 {
+		correctness = 1.0 - (float64(event.RejectsRecv) / float64(event.OrdersSent))
+		correctness = math.Max(0, math.Min(1, correctness))
+	}
+
+	entry := leaderboardEntry{
+		SubmissionID: event.SubmissionID,
+		TeamName:     event.TeamName,
+		Score:        score,
+		TPS:          event.TPS,
+		AckP50US:     event.AckP50US,
+		AckP90US:     event.AckP90US,
+		AckP99US:     event.AckP99US,
+		OrdersSent:   event.OrdersSent,
+		RejectsRecv:  event.RejectsRecv,
+		Correctness:  correctness,
+		DurationMS:   event.DurationMS,
+		Timestamp:    time.Now().UTC().Format(time.RFC3339),
+	}
+
+	payload, err := json.Marshal(entry)
+	if err != nil {
+		return fmt.Errorf("marshal leaderboard entry: %w", err)
+	}
+
+	// Store in hash for HTTP initial-load; key is submission_id so we can HGET
+	// individual entries after a ZREVRANGE scan.
+	if err := i.redis.HSet(ctx, "leaderboard_details", event.SubmissionID, payload).Err(); err != nil {
+		return fmt.Errorf("hset leaderboard_details: %w", err)
+	}
+
 	return i.redis.Publish(ctx, "leaderboard_updates", payload).Err()
 }
 
