@@ -1,0 +1,16 @@
+# Environment-specific variables
+region        = "us-east-1"
+cluster_name  = "iicpc-platform"
+
+# To override default instance types or sizing, uncomment and edit:
+# platform_instance_type = "m5.xlarge"
+# platform_min           = 2
+# platform_max           = 10
+
+# sandbox_instance_type  = "c5.2xlarge"
+# sandbox_min            = 1
+# sandbox_max            = 10
+
+# bots_instance_type     = "c5n.xlarge"
+# bots_min               = 0
+# bots_max               = 20
