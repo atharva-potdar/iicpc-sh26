@@ -1,0 +1,38 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: submission-api
+  namespace: platform
+  labels:
+    {{- include "iicpc.labels" . | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: submission-api
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: leaderboard-ws
+  namespace: platform
+  labels:
+    {{- include "iicpc.labels" . | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: leaderboard-ws
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: telemetry-ingester
+  namespace: platform
+  labels:
+    {{- include "iicpc.labels" . | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: telemetry-ingester

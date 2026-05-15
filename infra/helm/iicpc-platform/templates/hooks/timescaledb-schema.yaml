@@ -1,0 +1,60 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: timescaledb-schema
+  namespace: platform
+  labels:
+    {{- include "iicpc.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  template:
+    metadata:
+      name: timescaledb-schema
+    spec:
+      restartPolicy: Never
+      nodeSelector:
+        {{- toYaml .Values.nodeSelector.platform | nindent 8 }}
+      tolerations:
+        {{- toYaml .Values.tolerations.platform | nindent 8 }}
+      initContainers:
+        - name: wait-for-timescaledb
+          image: {{ .Values.thirdParty.timescaledb.image }}
+          command: ["sh", "-c", "until pg_isready -h timescaledb -U postgres; do echo waiting for timescaledb; sleep 2; done;"]
+      containers:
+        - name: apply-schema
+          image: {{ .Values.thirdParty.timescaledb.image }}
+          env:
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: iicpc-timescaledb
+                  key: password
+          command:
+            - /bin/bash
+            - -c
+            - |
+              psql -h timescaledb -U postgres -d postgres -c "
+                CREATE EXTENSION IF NOT EXISTS timescaledb;
+                CREATE TABLE IF NOT EXISTS telemetry_events (
+                  time          TIMESTAMPTZ NOT NULL,
+                  submission_id UUID        NOT NULL,
+                  bot_id        TEXT        NOT NULL,
+                  event_type    TEXT        NOT NULL,
+                  latency_us    BIGINT,
+                  order_id      TEXT
+                );
+                SELECT create_hypertable('telemetry_events', 'time', if_not_exists => TRUE);
+                CREATE TABLE IF NOT EXISTS submission_scores (
+                  submission_id UUID    PRIMARY KEY,
+                  team_name     TEXT    NOT NULL,
+                  p50_us        BIGINT,
+                  p90_us        BIGINT,
+                  p99_us        BIGINT,
+                  tps           NUMERIC,
+                  correctness   NUMERIC,
+                  composite     NUMERIC,
+                  scored_at     TIMESTAMPTZ DEFAULT NOW()
+                );
+              "

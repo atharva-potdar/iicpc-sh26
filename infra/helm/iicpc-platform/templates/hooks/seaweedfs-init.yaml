@@ -1,0 +1,28 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: seaweedfs-init
+  namespace: platform
+  labels:
+    {{- include "iicpc.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  template:
+    metadata:
+      name: seaweedfs-init
+    spec:
+      restartPolicy: Never
+      nodeSelector:
+        {{- toYaml .Values.nodeSelector.platform | nindent 8 }}
+      tolerations:
+        {{- toYaml .Values.tolerations.platform | nindent 8 }}
+      initContainers:
+        - name: wait-for-seaweedfs
+          image: curlimages/curl:latest
+          command: ["sh", "-c", "until curl -s http://seaweedfs:9333/cluster/status; do echo waiting for seaweedfs; sleep 2; done;"]
+      containers:
+        - name: create-buckets
+          image: curlimages/curl:latest
+          command: ["sh", "-c", "curl -X PUT http://seaweedfs:8333/submissions && curl -X PUT http://seaweedfs:8333/builds"]

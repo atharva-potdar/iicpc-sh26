@@ -1,0 +1,33 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: redpanda-topics
+  namespace: platform
+  labels:
+    {{- include "iicpc.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  template:
+    metadata:
+      name: redpanda-topics
+    spec:
+      restartPolicy: Never
+      nodeSelector:
+        {{- toYaml .Values.nodeSelector.platform | nindent 8 }}
+      tolerations:
+        {{- toYaml .Values.tolerations.platform | nindent 8 }}
+      initContainers:
+        - name: wait-for-redpanda
+          image: curlimages/curl:latest
+          command: ["sh", "-c", "until curl -s http://redpanda:9644/v1/status/ready; do echo waiting for redpanda; sleep 2; done;"]
+      containers:
+        - name: create-topics
+          image: {{ .Values.thirdParty.redpanda.image }}
+          command:
+            - /bin/bash
+            - -c
+            - |
+              rpk topic create submission.lifecycle --partitions 4 --replicas 1 --brokers redpanda:9092 || true
+              rpk topic create bot.metrics --partitions 8 --replicas 1 --brokers redpanda:9092 || true
