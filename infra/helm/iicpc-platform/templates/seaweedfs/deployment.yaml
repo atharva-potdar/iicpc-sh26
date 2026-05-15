@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: seaweedfs
+  namespace: platform
+  labels:
+    {{- include "iicpc.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: seaweedfs
+  template:
+    metadata:
+      labels:
+        {{- include "iicpc.labels" . | nindent 8 }}
+        app.kubernetes.io/name: seaweedfs
+    spec:
+      nodeSelector:
+        {{- toYaml .Values.nodeSelector.platform | nindent 8 }}
+      tolerations:
+        {{- toYaml .Values.tolerations.platform | nindent 8 }}
+      containers:
+        - name: seaweedfs
+          image: {{ .Values.thirdParty.seaweedfs.image }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - weed
+            - server
+            - -dir=/data
+            - -s3
+            - -s3.port=8333
+            - -master.port=9333
+            - -volume.port=8080
+            - -metricsPort=9324
+            - -master.volumeSizeLimitMB=1024
+            - -volume.max=0
+            - -master.defaultReplication=000
+          ports:
+            - name: s3
+              containerPort: 8333
+            - name: master
+              containerPort: 9333
+            - name: volume
+              containerPort: 8080
+          resources:
+            requests:
+              memory: 128Mi
+              cpu: "100m"
+            limits:
+              memory: 256Mi
+              cpu: "250m"
+          readinessProbe:
+            httpGet:
+              path: /cluster/status
+              port: 9333
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: seaweedfs-data
