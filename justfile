@@ -72,7 +72,6 @@ smoke-test:
 
 dev-teardown:
     kubectl delete -f infra/k8s/platform/ || true
-    kubectl delete -f infra/k8s/pvc.yaml || true
     kubectl delete -f infra/k8s/rbac.yaml || true
     kubectl delete -f infra/k8s/network-policies.yaml || true
     kubectl delete namespace platform builds sandboxes bots || true

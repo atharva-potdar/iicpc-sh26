@@ -6,8 +6,6 @@ echo "Applying cluster config"
 kubectl apply -f infra/k8s/namespaces.yaml
 kubectl apply -f infra/k8s/network-policies.yaml
 kubectl apply -f infra/k8s/rbac.yaml
-kubectl apply -f infra/k8s/pvc.yaml
-
 echo "Verifying gVisor RuntimeClass"
 kubectl get runtimeclass gvisor &&
   echo "RuntimeClass OK" ||
