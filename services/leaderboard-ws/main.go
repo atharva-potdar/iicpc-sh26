@@ -38,10 +38,11 @@ type leaderboardEntry struct {
 
 func main() {
 	redisAddr := envStr("REDIS_ADDR", "redis.platform.svc.cluster.local:6379")
-	port := envStr("PORT", "8090")
+	redisPass := envStr("REDIS_PASSWORD", "")
 
 	rdb := redis.NewClient(&redis.Options{
-		Addr: redisAddr,
+		Addr:     redisAddr,
+		Password: redisPass,
 	})
 	defer rdb.Close()
 

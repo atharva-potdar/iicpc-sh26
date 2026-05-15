@@ -28,10 +28,9 @@ func main() {
 	brokers := strings.Split(envStr("REDPANDA_BROKERS", "redpanda.platform.svc.cluster.local:9092"), ",")
 	dsn := envStr("TIMESCALEDB_DSN", "postgres://postgres:iicpc@timescaledb.platform.svc.cluster.local:5432/iicpc")
 	redisAddr := envStr("REDIS_ADDR", "redis.platform.svc.cluster.local:6379")
-	maxLatencyUS := envFloat("MAX_ACCEPTABLE_LATENCY_US", 100000)
-	maxTPS := envFloat("MAX_ACCEPTABLE_TPS", 10000)
+	redisPass := envStr("REDIS_PASSWORD", "")
 
-	ingester, err := NewIngester(dsn, redisAddr, maxLatencyUS, maxTPS)
+	ingester, err := NewIngester(dsn, redisAddr, redisPass, maxLatencyUS, maxTPS)
 	if err != nil {
 		log.Fatalf("init ingester: %v", err)
 	}

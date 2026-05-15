@@ -31,14 +31,13 @@ type Ingester struct {
 	closeCh     chan struct{}
 }
 
-func NewIngester(dsn, redisAddr string, maxLatencyUS, maxTPS float64) (*Ingester, error) {
-	db, err := pgxpool.New(context.Background(), dsn)
-	if err != nil {
-		return nil, fmt.Errorf("create pgxpool: %w", err)
-	}
+func NewIngester(dsn, redisAddr, redisPass string, maxLatencyUS, maxTPS float64) (*Ingester, error) {
+	ctx := context.Background()
 
+	// Connect Redis
 	rdb := redis.NewClient(&redis.Options{
-		Addr: redisAddr,
+		Addr:     redisAddr,
+		Password: redisPass,
 	})
 
 	ingester := &Ingester{
