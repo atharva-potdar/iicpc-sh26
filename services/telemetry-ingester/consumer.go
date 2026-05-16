@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"log"
+	"log/slog"
 
 	"github.com/twmb/franz-go/pkg/kgo"
 )
@@ -57,12 +57,12 @@ func (c *Consumer) Run(ctx context.Context, handler func(context.Context, BotMet
 			return
 		}
 		fetches.EachError(func(t string, p int32, err error) {
-			log.Printf("fetch error topic=%s partition=%d: %v", t, p, err)
+			slog.Error("fetch error", "topic", t, "partition", p, "error", err)
 		})
 		fetches.EachRecord(func(r *kgo.Record) {
 			var event BotMetricsEvent
 			if err := json.Unmarshal(r.Value, &event); err != nil {
-				log.Printf("unmarshal bot.metrics: %v", err)
+				slog.Error("unmarshal bot.metrics", "error", err)
 				return
 			}
 			if event.Event != "bot.metrics" {

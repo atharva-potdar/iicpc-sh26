@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"time"
+	"unicode/utf8"
 
 	"github.com/twmb/franz-go/pkg/kgo"
 )
@@ -97,5 +98,9 @@ func truncate(s string, max int) string {
 	if len(s) <= max {
 		return s
 	}
-	return s[:max]
+	s = s[:max]
+	for !utf8.ValidString(s) {
+		s = s[:len(s)-1]
+	}
+	return s
 }

@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"log"
+	"log/slog"
 
 	"github.com/twmb/franz-go/pkg/kgo"
 )
@@ -42,7 +42,7 @@ func (c *Consumer) Run(ctx context.Context, handler func(context.Context, Sandbo
 			return
 		}
 		fetches.EachError(func(t string, p int32, err error) {
-			log.Printf("fetch error topic=%s partition=%d: %v", t, p, err)
+			slog.Error("fetch error", "topic", t, "partition", p, "error", err)
 		})
 		fetches.EachRecord(func(r *kgo.Record) {
 			var base struct {
@@ -56,7 +56,7 @@ func (c *Consumer) Run(ctx context.Context, handler func(context.Context, Sandbo
 			}
 			var event SandboxReadyEvent
 			if err := json.Unmarshal(r.Value, &event); err != nil {
-				log.Printf("unmarshal sandbox.ready: %v", err)
+				slog.Error("unmarshal sandbox.ready", "error", err)
 				return
 			}
 			handler(ctx, event)

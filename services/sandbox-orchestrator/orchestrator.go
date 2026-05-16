@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -139,7 +139,7 @@ func (o *Orchestrator) Deploy(ctx context.Context, event BuildCompleteEvent) (*D
 	if podIP == "" {
 		return nil, fmt.Errorf("pod has no IP assigned")
 	}
-	log.Printf("sandbox pod running and ready: %s (ip=%s)", podName, podIP)
+	slog.Info("sandbox pod running and ready", "pod", podName, "ip", podIP)
 
 	success = true
 	return &DeployResult{
@@ -310,7 +310,7 @@ func (o *Orchestrator) collectPodLogs(ctx context.Context, podName string) strin
 	}
 	defer func() {
 		if err := stream.Close(); err != nil {
-			log.Printf("pod log stream close error: %v", err)
+			slog.Error("pod log stream close error", "error", err)
 		}
 	}()
 
@@ -323,7 +323,7 @@ func (o *Orchestrator) collectPodLogs(ctx context.Context, podName string) strin
 
 func (o *Orchestrator) cleanupPod(ctx context.Context, name string) {
 	if err := o.k8sClient.CoreV1().Pods(sandboxNamespace).Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
-		log.Printf("cleanup pod %s: %v", name, err)
+		slog.Error("cleanup pod", "pod", name, "error", err)
 	}
 }
 

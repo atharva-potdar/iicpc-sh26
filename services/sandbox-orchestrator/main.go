@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"strconv"
@@ -48,28 +48,32 @@ func main() {
 
 	publisher, err := NewPublisher(redpandaBrokers)
 	if err != nil {
-		log.Fatalf("init publisher: %v", err)
+		slog.Error("init publisher", "error", err)
+		os.Exit(1)
 	}
 	defer publisher.Close()
 
 	orchestrator, err := NewOrchestrator(seaweedfsEndpoint, cfg)
 	if err != nil {
-		log.Fatalf("init orchestrator: %v", err)
+		slog.Error("init orchestrator", "error", err)
+		os.Exit(1)
 	}
 	defer orchestrator.Close()
 
 	consumer, err := NewConsumer(redpandaBrokers, orchestrator, publisher)
 	if err != nil {
-		log.Fatalf("init consumer: %v", err)
+		slog.Error("init consumer", "error", err)
+		os.Exit(1)
 	}
 	defer consumer.Close()
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	log.Println("sandbox-orchestrator starting")
+	slog.Info("sandbox-orchestrator starting")
 	if err := consumer.Run(ctx); err != nil && ctx.Err() == nil {
-		log.Fatalf("consumer: %v", err)
+		slog.Error("consumer", "error", err)
+		os.Exit(1)
 	}
-	log.Println("sandbox-orchestrator stopped")
+	slog.Info("sandbox-orchestrator stopped")
 }

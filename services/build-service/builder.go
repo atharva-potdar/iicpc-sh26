@@ -7,8 +7,9 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"path"
+	"unicode/utf8"
 	"strconv"
 	"strings"
 	"time"
@@ -124,7 +125,7 @@ func (b *Builder) Build(ctx context.Context, event SubmissionCreatedEvent) (*Bui
 	if err != nil {
 		return nil, fmt.Errorf("download source: %w", err)
 	}
-	log.Printf("downloaded source: %d bytes", len(source))
+	slog.Info("downloaded source", "bytes", len(source))
 
 	// 2. Create build pod
 	podName := fmt.Sprintf("build-%s", event.SubmissionID)
@@ -140,7 +141,7 @@ func (b *Builder) Build(ctx context.Context, event SubmissionCreatedEvent) (*Bui
 	if err := b.waitForPodRunning(ctx, pod.Name); err != nil {
 		return nil, fmt.Errorf("wait for pod: %w", err)
 	}
-	log.Printf("build pod running: %s", podName)
+	slog.Info("build pod running", "pod", podName)
 
 	// 3. Stream source into pod and extract
 	if err := b.injectSource(ctx, podName, source); err != nil {
@@ -153,10 +154,13 @@ func (b *Builder) Build(ctx context.Context, event SubmissionCreatedEvent) (*Bui
 		reason := fmt.Sprintf("build error: %s", buildStderr)
 		if len(reason) > b.maxLogBytes {
 			reason = reason[:b.maxLogBytes]
+			for !utf8.ValidString(reason) {
+				reason = reason[:len(reason)-1]
+			}
 		}
 		return nil, fmt.Errorf("%s", reason)
 	}
-	log.Printf("build succeeded: %s", podName)
+	slog.Info("build succeeded", "pod", podName)
 
 	// 5. Extract binary and upload
 	binaryPath := fmt.Sprintf("builds/%s/binary", event.SubmissionID)
@@ -177,7 +181,7 @@ func (b *Builder) downloadArtifact(ctx context.Context, key string) ([]byte, err
 	}
 	defer func() {
 		if err := out.Body.Close(); err != nil {
-			log.Printf("s3 body close error: %v", err)
+			slog.Error("s3 body close error", "error", err)
 		}
 	}()
 	return io.ReadAll(out.Body)
@@ -268,7 +272,7 @@ func validateTarGz(tarGz []byte) error {
 	}
 	defer func() {
 		if err := gz.Close(); err != nil {
-			log.Printf("gzip reader close error: %v", err)
+			slog.Error("gzip reader close error", "error", err)
 		}
 	}()
 
@@ -366,7 +370,7 @@ func (b *Builder) extractAndUploadBinary(ctx context.Context, podName, binaryPat
 	if err != nil {
 		return fmt.Errorf("upload binary: %w", err)
 	}
-	log.Printf("uploaded binary: %s (%d bytes)", binaryPath, len(binaryData))
+	slog.Info("uploaded binary", "path", binaryPath, "bytes", len(binaryData))
 	return nil
 }
 
@@ -405,7 +409,7 @@ func (b *Builder) execInPod(
 
 func (b *Builder) cleanupPod(ctx context.Context, name string) {
 	if err := b.k8sClient.CoreV1().Pods(buildNamespace).Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
-		log.Printf("cleanup pod %s: %v", name, err)
+		slog.Error("cleanup pod", "pod", name, "error", err)
 	}
 }
 

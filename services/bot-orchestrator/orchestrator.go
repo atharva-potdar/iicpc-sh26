@@ -3,13 +3,14 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -22,11 +23,13 @@ type Orchestrator struct {
 }
 
 type Config struct {
-	NumBots         int
-	DurationSeconds int
-	JobTimeoutSec   int
-	RedpandaBrokers string
-	BotRunnerImage  string
+	NumBots          int
+	DurationSeconds  int
+	JobTimeoutSec    int
+	WarmupSeconds    int
+	RedpandaBrokers  string
+	BotRunnerImage   string
+	SandboxNamespace string
 }
 
 func NewOrchestrator(publisher *Publisher, cfg Config) (*Orchestrator, error) {
@@ -42,8 +45,11 @@ func NewOrchestrator(publisher *Publisher, cfg Config) (*Orchestrator, error) {
 }
 
 func (o *Orchestrator) Handle(ctx context.Context, event SandboxReadyEvent) {
-	log.Printf("handling sandbox.ready: submission=%s pod=%s ip=%s",
-		event.SubmissionID, event.PodName, event.PodIP)
+	slog.Info("handling sandbox.ready",
+		"submission", event.SubmissionID,
+		"pod", event.PodName,
+		"ip", event.PodIP,
+	)
 
 	err := o.runTest(ctx, event)
 
@@ -51,12 +57,12 @@ func (o *Orchestrator) Handle(ctx context.Context, event SandboxReadyEvent) {
 	reason := ""
 	if err != nil {
 		reason = err.Error()
-		log.Printf("test failed: submission=%s err=%v", event.SubmissionID, err)
+		slog.Error("test failed", "submission", event.SubmissionID, "error", err)
 	}
 
 	// Always delete sandbox pod
 	if delErr := o.deleteSandboxPod(ctx, event.PodName); delErr != nil {
-		log.Printf("failed to delete sandbox pod %s: %v", event.PodName, delErr)
+		slog.Error("failed to delete sandbox pod", "pod", event.PodName, "error", delErr)
 	}
 
 	if pubErr := o.publisher.PublishTestComplete(ctx, TestCompleteEvent{
@@ -65,12 +71,12 @@ func (o *Orchestrator) Handle(ctx context.Context, event SandboxReadyEvent) {
 		Success:      success,
 		Reason:       reason,
 	}); pubErr != nil {
-		log.Printf("failed to publish test.complete: %v", pubErr)
+		slog.Error("failed to publish test.complete", "error", pubErr)
 	}
 }
 
 func (o *Orchestrator) runTest(ctx context.Context, event SandboxReadyEvent) error {
-	jobName := fmt.Sprintf("bot-runner-%s", event.SubmissionID[:8])
+	jobName := fmt.Sprintf("bot-runner-%s", event.SubmissionID)
 	targetEndpoint := fmt.Sprintf("ws://%s:%d/stream", event.PodIP, event.WSPort)
 
 	ttl := int32(300)
@@ -124,20 +130,24 @@ func (o *Orchestrator) runTest(ctx context.Context, event SandboxReadyEvent) err
 	if err != nil {
 		return fmt.Errorf("create job: %w", err)
 	}
-	log.Printf("created bot runner job: %s", jobName)
+	slog.Info("created bot runner job", "job", jobName)
 
-	log.Printf("warming up sandbox: submission=%s", event.SubmissionID)
-	time.Sleep(15 * time.Second)
+	slog.Info("warming up sandbox", "submission", event.SubmissionID, "seconds", o.cfg.WarmupSeconds)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(time.Duration(o.cfg.WarmupSeconds) * time.Second):
+	}
 
 	if err := o.waitForJob(ctx, jobName); err != nil {
 		if delErr := o.deleteJob(ctx, jobName); delErr != nil {
-			log.Printf("failed to delete job %s after success: %v", jobName, delErr)
+			slog.Error("failed to delete job after failure", "job", jobName, "error", delErr)
 		}
 		return err
 	}
 
 	if delErr := o.deleteJob(ctx, jobName); delErr != nil {
-		log.Printf("failed to delete job %s after success: %v", jobName, delErr)
+		slog.Error("failed to delete job after success", "job", jobName, "error", delErr)
 	}
 	return nil
 }
@@ -145,7 +155,7 @@ func (o *Orchestrator) runTest(ctx context.Context, event SandboxReadyEvent) err
 func (o *Orchestrator) waitForJob(ctx context.Context, jobName string) error {
 	timeout := int64(o.cfg.JobTimeoutSec)
 	watcher, err := o.k8s.BatchV1().Jobs("bots").Watch(ctx, metav1.ListOptions{
-		FieldSelector:  fmt.Sprintf("metadata.name=%s", jobName),
+		FieldSelector:  fields.OneTermEqualSelector("metadata.name", jobName).String(),
 		TimeoutSeconds: &timeout,
 	})
 	if err != nil {
@@ -160,7 +170,7 @@ func (o *Orchestrator) waitForJob(ctx context.Context, jobName string) error {
 				continue
 			}
 			if job.Status.Succeeded > 0 {
-				log.Printf("job %s succeeded", jobName)
+				slog.Info("job succeeded", "job", jobName)
 				return nil
 			}
 			if job.Status.Failed > 0 {
@@ -182,7 +192,10 @@ func (o *Orchestrator) deleteSandboxPod(ctx context.Context, podName string) err
 	if podName == "" {
 		return nil
 	}
-	return o.k8s.CoreV1().Pods("sandboxes").Delete(ctx, podName, metav1.DeleteOptions{})
+	gracePeriod := int64(5)
+	return o.k8s.CoreV1().Pods(o.cfg.SandboxNamespace).Delete(ctx, podName, metav1.DeleteOptions{
+		GracePeriodSeconds: &gracePeriod,
+	})
 }
 
 func mustParseQuantity(s string) resource.Quantity {

@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -82,7 +82,7 @@ func publishMetrics(client *kgo.Client, agg *AggregateMetrics, duration time.Dur
 
 	client.Produce(context.Background(), record, func(_ *kgo.Record, err error) {
 		if err != nil {
-			log.Printf("async metrics produce failed: %v", err)
+			slog.Error("async metrics produce failed", "error", err)
 		}
 	})
 	return nil

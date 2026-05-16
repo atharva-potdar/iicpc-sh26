@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"strconv"
@@ -29,7 +29,13 @@ func envInt(key string, def int) int {
 
 func run() error {
 	seaweedfsEndpoint := envStr("SEAWEEDFS_ENDPOINT", "http://seaweedfs.platform.svc.cluster.local:8333")
-	redpandaBrokers := strings.Split(envStr("REDPANDA_BROKERS", "redpanda.platform.svc.cluster.local:9092"), ",")
+	rawBrokers := envStr("REDPANDA_BROKERS", "redpanda.platform.svc.cluster.local:9092")
+	var redpandaBrokers []string
+	for _, b := range strings.Split(rawBrokers, ",") {
+		if trimmed := strings.TrimSpace(b); trimmed != "" {
+			redpandaBrokers = append(redpandaBrokers, trimmed)
+		}
+	}
 	buildTimeout := envInt("BUILD_TIMEOUT_SECONDS", 120)
 	maxLogBytes := envInt("MAX_LOG_BYTES", 4096)
 
@@ -53,19 +59,20 @@ func run() error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	log.Println("build-service starting")
+	slog.Info("build-service starting")
 	if err := consumer.Run(ctx); err != nil {
 		if ctx.Err() == nil {
 			return fmt.Errorf("consumer: %v", err)
 		}
 	}
-	log.Println("build-service stopped")
+	slog.Info("build-service stopped")
 
 	return nil
 }
 
 func main() {
 	if err := run(); err != nil {
-		log.Fatalf("fatal: %v", err)
+		slog.Error("fatal", "error", err)
+		os.Exit(1)
 	}
 }

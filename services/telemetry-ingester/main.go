@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 func envStr(key, def string) string {
@@ -28,7 +30,13 @@ func envFloat(key string, def float64) float64 {
 }
 
 func run() error {
-	brokers := strings.Split(envStr("REDPANDA_BROKERS", "redpanda.platform.svc.cluster.local:9092"), ",")
+	rawBrokers := envStr("REDPANDA_BROKERS", "redpanda.platform.svc.cluster.local:9092")
+	var brokers []string
+	for _, b := range strings.Split(rawBrokers, ",") {
+		if trimmed := strings.TrimSpace(b); trimmed != "" {
+			brokers = append(brokers, trimmed)
+		}
+	}
 	dsn := envStr("TIMESCALEDB_DSN", "postgres://postgres:obarena@timescaledb.platform.svc.cluster.local:5432/obarena")
 	redisAddr := envStr("REDIS_ADDR", "redis.platform.svc.cluster.local:6379")
 	redisPass := envStr("REDIS_PASSWORD", "")
@@ -51,7 +59,29 @@ func run() error {
 	}
 	defer consumer.Close()
 
-	log.Printf("telemetry-ingester started")
+	slog.Info("telemetry-ingester started")
+
+	// Health check endpoint
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if _, err := w.Write([]byte(`{"status":"ok"}`)); err != nil {
+			slog.Error("healthz write error", "error", err)
+		}
+	})
+	healthSrv := &http.Server{Addr: ":8080", Handler: mux}
+	go func() {
+		if err := healthSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			slog.Error("healthz server", "error", err)
+		}
+	}()
+	defer func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		if err := healthSrv.Shutdown(shutdownCtx); err != nil {
+			slog.Error("healthz shutdown error", "error", err)
+		}
+	}()
 
 	consumer.Run(ctx, ingester.Handle)
 
@@ -60,6 +90,7 @@ func run() error {
 
 func main() {
 	if err := run(); err != nil {
-		log.Fatalf("fatal: %v", err)
+		slog.Error("fatal", "error", err)
+		os.Exit(1)
 	}
 }

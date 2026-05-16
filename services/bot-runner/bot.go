@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -56,6 +56,7 @@ func (b *Bot) Run(ctx context.Context, duration time.Duration, ready chan<- stru
 			break
 		}
 		if strings.Contains(err.Error(), "connection refused") {
+			slog.Info("bot warmup retrying", "bot", b.id, "error", err)
 			select {
 			case <-ctx.Done():
 				return
@@ -63,7 +64,7 @@ func (b *Bot) Run(ctx context.Context, duration time.Duration, ready chan<- stru
 			}
 			continue
 		}
-		log.Printf("bot %d warmup: %v", b.id, err)
+		slog.Error("bot warmup failed", "bot", b.id, "error", err)
 		select {
 		case <-ctx.Done():
 			return
@@ -72,7 +73,7 @@ func (b *Bot) Run(ctx context.Context, duration time.Duration, ready chan<- stru
 	}
 	defer func() {
 		if err := conn.Close(websocket.StatusNormalClosure, ""); err != nil {
-			log.Printf("bot %d close error: %v", b.id, err)
+			slog.Error("bot close error", "bot", b.id, "error", err)
 		}
 	}()
 
@@ -184,7 +185,7 @@ func (b *Bot) Run(ctx context.Context, duration time.Duration, ready chan<- stru
 		}
 		select {
 		case err := <-errCh:
-			log.Printf("bot %d read error: %v", b.id, err)
+			slog.Error("bot read error", "bot", b.id, "error", err)
 			mu.Lock()
 			b.metrics.staleOrders++
 			mu.Unlock()
@@ -210,6 +211,9 @@ func (b *Bot) Run(ctx context.Context, duration time.Duration, ready chan<- stru
 
 				// Backpressure check
 				for inFlight.Load() > 20 {
+					if ctx.Err() != nil {
+						return
+					}
 					time.Sleep(1 * time.Millisecond)
 				}
 
@@ -222,7 +226,7 @@ func (b *Bot) Run(ctx context.Context, duration time.Duration, ready chan<- stru
 			}
 
 			if err := conn.Write(ctx, websocket.MessageText, payload); err != nil {
-				log.Printf("bot %d write error: %v", b.id, err)
+				slog.Error("bot write error", "bot", b.id, "error", err)
 				mu.Lock()
 				b.metrics.staleOrders++
 				mu.Unlock()

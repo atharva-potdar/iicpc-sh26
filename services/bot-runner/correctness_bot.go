@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"math"
 	"net/http"
 	"strings"
@@ -28,6 +28,7 @@ type CorrectnessResult struct {
 type CorrectnessBot struct {
 	endpoint string
 	httpBase string
+	client   *http.Client
 }
 
 func NewCorrectnessBot(wsEndpoint string) *CorrectnessBot {
@@ -36,6 +37,7 @@ func NewCorrectnessBot(wsEndpoint string) *CorrectnessBot {
 	return &CorrectnessBot{
 		endpoint: wsEndpoint,
 		httpBase: httpBase,
+		client:   &http.Client{Timeout: 5 * time.Second},
 	}
 }
 
@@ -44,12 +46,12 @@ func (cb *CorrectnessBot) Run(ctx context.Context) CorrectnessResult {
 	var result CorrectnessResult
 
 	for _, seq := range seqs {
-		log.Printf("correctness: running sequence %q", seq.Name)
+		slog.Info("correctness: running sequence", "name", seq.Name)
 		passed, failures := cb.runSequence(ctx, seq)
 		result.Passed += passed
 		result.Failed += len(failures)
 		for _, f := range failures {
-			log.Printf("  FAIL [%s]: %s", seq.Name, f)
+			slog.Error("correctness: FAIL", "name", seq.Name, "failure", f)
 			result.FailureDetails = append(result.FailureDetails, fmt.Sprintf("[%s] %s", seq.Name, f))
 		}
 	}
@@ -75,7 +77,7 @@ func (cb *CorrectnessBot) runSequence(ctx context.Context, seq Sequence) (int, [
 	}
 	defer func() {
 		if err := conn.Close(websocket.StatusNormalClosure, "done"); err != nil {
-			log.Printf("correctness bot close error: %v", err)
+			slog.Error("correctness bot close error", "error", err)
 		}
 	}()
 
@@ -239,14 +241,13 @@ func (cb *CorrectnessBot) runSequence(ctx context.Context, seq Sequence) (int, [
 }
 
 func (cb *CorrectnessBot) queryOrderbook() (bids, asks int, err error) {
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get(cb.httpBase + "/orderbook")
+	resp, err := cb.client.Get(cb.httpBase + "/orderbook")
 	if err != nil {
 		return 0, 0, err
 	}
 	defer func() {
 		if err := resp.Body.Close(); err != nil {
-			log.Printf("orderbook response body close error: %v", err)
+			slog.Error("orderbook response body close error", "error", err)
 		}
 	}()
 

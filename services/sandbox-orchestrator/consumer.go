@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 
 	"github.com/twmb/franz-go/pkg/kgo"
 )
@@ -47,7 +47,7 @@ func (c *Consumer) Run(ctx context.Context) error {
 		}
 		if errs := fetches.Errors(); len(errs) > 0 {
 			for _, e := range errs {
-				log.Printf("fetch error: topic=%s partition=%d err=%v", e.Topic, e.Partition, e.Err)
+				slog.Error("fetch error", "topic", e.Topic, "partition", e.Partition, "error", e.Err)
 			}
 			continue
 		}
@@ -57,7 +57,7 @@ func (c *Consumer) Run(ctx context.Context) error {
 		})
 
 		if err := c.client.CommitUncommittedOffsets(ctx); err != nil {
-			log.Printf("commit offsets: %v", err)
+			slog.Error("commit offsets", "error", err)
 		}
 	}
 }
@@ -65,7 +65,7 @@ func (c *Consumer) Run(ctx context.Context) error {
 func (c *Consumer) handleRecord(ctx context.Context, record *kgo.Record) {
 	var event BuildCompleteEvent
 	if err := json.Unmarshal(record.Value, &event); err != nil {
-		log.Printf("unmarshal event: %v", err)
+		slog.Error("unmarshal event", "error", err)
 		return
 	}
 
@@ -73,24 +73,29 @@ func (c *Consumer) handleRecord(ctx context.Context, record *kgo.Record) {
 		return
 	}
 
-	log.Printf("processing sandbox: submission=%s team=%s",
-		event.SubmissionID, event.TeamName)
+	slog.Info("processing sandbox",
+		"submission", event.SubmissionID,
+		"team", event.TeamName,
+	)
 
 	result, err := c.orchestrator.Deploy(ctx, event)
 	if err != nil {
-		log.Printf("sandbox failed: submission=%s err=%v", event.SubmissionID, err)
+		slog.Error("sandbox failed", "submission", event.SubmissionID, "error", err)
 		if pubErr := c.publisher.PublishSandboxFailed(ctx, event.SubmissionID, err.Error()); pubErr != nil {
-			log.Printf("publish sandbox.failed: %v", pubErr)
+			slog.Error("publish sandbox.failed", "error", pubErr)
 		}
 		return
 	}
 
-	log.Printf("sandbox ready: submission=%s pod=%s ip=%s",
-		event.SubmissionID, result.PodName, result.PodIP)
+	slog.Info("sandbox ready",
+		"submission", event.SubmissionID,
+		"pod", result.PodName,
+		"ip", result.PodIP,
+	)
 	if pubErr := c.publisher.PublishSandboxReady(
 		ctx, event.SubmissionID, result.PodName, result.PodIP, event.TeamName,
 	); pubErr != nil {
-		log.Printf("publish sandbox.ready: %v", pubErr)
+		slog.Error("publish sandbox.ready", "error", pubErr)
 	}
 }
 

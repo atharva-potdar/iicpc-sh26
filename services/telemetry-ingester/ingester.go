@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"math"
 	"sync"
 	"time"
@@ -40,6 +40,13 @@ func NewIngester(lifecycleCtx context.Context, dsn, redisAddr, redisPass string,
 		Addr:     redisAddr,
 		Password: redisPass,
 	})
+
+	pingCtx, pingCancel := context.WithTimeout(lifecycleCtx, 5*time.Second)
+	if err := rdb.Ping(pingCtx).Err(); err != nil {
+		pingCancel()
+		return nil, fmt.Errorf("redis ping: %w", err)
+	}
+	pingCancel()
 
 	// Connect PostgreSQL
 	db, err := pgxpool.New(ctx, dsn)
@@ -92,7 +99,7 @@ func (i *Ingester) flush(ctx context.Context) {
 	i.mu.Unlock()
 
 	if err := i.writeBatch(ctx, bufferToFlush); err != nil {
-		log.Printf("flush batch error: %v", err)
+		slog.Error("flush batch error", "error", err)
 	}
 }
 
@@ -127,7 +134,7 @@ func (i *Ingester) writeBatch(ctx context.Context, pairs []EventScorePair) error
 	br := i.db.SendBatch(ctx, batch)
 	defer func() {
 		if err := br.Close(); err != nil {
-			log.Printf("batch result close error: %v", err)
+			slog.Error("batch result close error", "error", err)
 		}
 	}()
 
@@ -153,11 +160,15 @@ func (i *Ingester) Handle(ctx context.Context, event BotMetricsEvent) {
 	i.mu.Unlock()
 
 	if err := i.updateLeaderboard(ctx, event, score); err != nil {
-		log.Printf("update leaderboard: %v", err)
+		slog.Error("update leaderboard", "error", err)
 	}
 
-	log.Printf("ingested: submission=%s score=%.4f tps=%.0f ack_p90=%dµs",
-		event.SubmissionID, score, event.TPS, event.AckP90US)
+	slog.Info("ingested",
+		"submission", event.SubmissionID,
+		"score", score,
+		"tps", event.TPS,
+		"ack_p90", event.AckP90US,
+	)
 }
 
 
@@ -248,6 +259,6 @@ func (i *Ingester) Close() {
 	time.Sleep(100 * time.Millisecond) // wait for flushLoop to complete final flush
 	i.db.Close()
 	if err := i.redis.Close(); err != nil {
-		log.Printf("redis close error: %v", err)
+		slog.Error("redis close error", "error", err)
 	}
 }

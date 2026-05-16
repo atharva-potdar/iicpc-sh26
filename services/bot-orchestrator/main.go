@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -56,7 +56,7 @@ func (s *Server) runHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Body != nil {
 		defer func() {
 			if err := r.Body.Close(); err != nil {
-				log.Printf("runHandler body close error: %v", err)
+				slog.Error("runHandler body close error", "error", err)
 			}
 		}()
 		_ = json.NewDecoder(r.Body).Decode(&event)
@@ -87,7 +87,7 @@ func (s *Server) runHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusAccepted)
 	if _, err := w.Write([]byte(`{"status": "started"}`)); err != nil {
-		log.Printf("runHandler write error: %v", err)
+		slog.Error("runHandler write error", "error", err)
 	}
 }
 
@@ -108,44 +108,61 @@ func (s *Server) statusHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(map[string]string{"status": status}); err != nil {
-		log.Printf("statusHandler encode error: %v", err)
+		slog.Error("statusHandler encode error", "error", err)
 	}
 }
 
 func main() {
-	brokers := strings.Split(envStr("REDPANDA_BROKERS", "redpanda.platform.svc.cluster.local:9092"), ",")
+	rawBrokers := envStr("REDPANDA_BROKERS", "redpanda.platform.svc.cluster.local:9092")
+	var brokers []string
+	for _, b := range strings.Split(rawBrokers, ",") {
+		if trimmed := strings.TrimSpace(b); trimmed != "" {
+			brokers = append(brokers, trimmed)
+		}
+	}
 	numBots := envInt("NUM_BOTS", 50)
 	durationSec := envInt("DURATION_SECONDS", 60)
 	jobTimeoutSec := envInt("JOB_TIMEOUT_SECONDS", 120)
+	warmupSec := envInt("WARMUP_SECONDS", 15)
+	sandboxNamespace := envStr("SANDBOX_NAMESPACE", "sandboxes")
 	botRunnerImage := envStr("BOT_RUNNER_IMAGE", "bot-runner:dev")
 
 	publisher, err := NewPublisher(brokers)
 	if err != nil {
-		log.Fatalf("init publisher: %v", err)
+		slog.Error("init publisher", "error", err)
+		os.Exit(1)
 	}
 	defer publisher.Close()
 
 	cfg := Config{
-		NumBots:         numBots,
-		DurationSeconds: durationSec,
-		JobTimeoutSec:   jobTimeoutSec,
-		RedpandaBrokers: strings.Join(brokers, ","),
-		BotRunnerImage:  botRunnerImage,
+		NumBots:          numBots,
+		DurationSeconds:  durationSec,
+		JobTimeoutSec:    jobTimeoutSec,
+		WarmupSeconds:    warmupSec,
+		RedpandaBrokers:  strings.Join(brokers, ","),
+		BotRunnerImage:   botRunnerImage,
+		SandboxNamespace: sandboxNamespace,
 	}
 
 	orchestrator, err := NewOrchestrator(publisher, cfg)
 	if err != nil {
-		log.Fatalf("init orchestrator: %v", err)
+		slog.Error("init orchestrator", "error", err)
+		os.Exit(1)
 	}
 
 	consumer, err := NewConsumer(brokers)
 	if err != nil {
-		log.Fatalf("init consumer: %v", err)
+		slog.Error("init consumer", "error", err)
+		os.Exit(1)
 	}
 	defer consumer.Close()
 
-	log.Printf("bot-orchestrator started | numBots=%d | duration=%ds | jobTimeout=%ds",
-		numBots, durationSec, jobTimeoutSec)
+	slog.Info("bot-orchestrator started",
+		"numBots", numBots,
+		"duration", durationSec,
+		"jobTimeout", jobTimeoutSec,
+		"warmup", warmupSec,
+	)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -156,7 +173,7 @@ func main() {
 	http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		if _, err := w.Write([]byte("ok")); err != nil {
-			log.Printf("healthz write error: %v", err)
+			slog.Error("healthz write error", "error", err)
 		}
 	})
 
@@ -164,9 +181,10 @@ func main() {
 
 	// Run HTTP server
 	go func() {
-		log.Println("HTTP server listening on :8080")
+		slog.Info("HTTP server listening on :8080")
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("http server: %v", err)
+			slog.Error("http server", "error", err)
+			os.Exit(1)
 		}
 	}()
 
@@ -176,7 +194,7 @@ func main() {
 			srv.mu.Lock()
 			if srv.isRunning {
 				srv.mu.Unlock()
-				log.Printf("ignoring sandbox.ready for %s because test is already running", e.SubmissionID)
+				slog.Info("ignoring sandbox.ready, test already running", "submission", e.SubmissionID)
 				return
 			}
 			srv.isRunning = true
@@ -193,10 +211,10 @@ func main() {
 	}()
 
 	<-ctx.Done()
-	log.Println("shutting down")
+	slog.Info("shutting down")
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer shutdownCancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
-		log.Printf("http server shutdown error: %v", err)
+		slog.Error("http server shutdown error", "error", err)
 	}
 }

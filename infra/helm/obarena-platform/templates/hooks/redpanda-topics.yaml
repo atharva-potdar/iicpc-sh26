@@ -8,6 +8,7 @@ metadata:
   annotations:
     "helm.sh/hook": post-install,post-upgrade
     "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+    "helm.sh/hook-weight": "-10"
 spec:
   template:
     metadata:
@@ -29,5 +30,15 @@ spec:
             - /bin/bash
             - -c
             - |
-              rpk topic create submission.lifecycle --partitions 4 --replicas 1 --brokers redpanda:9092 || true
-              rpk topic create bot.metrics --partitions 8 --replicas 1 --brokers redpanda:9092 || true
+              if ! output=$(rpk topic create submission.lifecycle --partitions 4 --replicas 1 --brokers redpanda:9092 2>&1); then
+                if ! echo "$output" | grep -q "TOPIC_ALREADY_EXISTS"; then
+                  echo "$output" >&2
+                  exit 1
+                fi
+              fi
+              if ! output=$(rpk topic create bot.metrics --partitions 8 --replicas 1 --brokers redpanda:9092 2>&1); then
+                if ! echo "$output" | grep -q "TOPIC_ALREADY_EXISTS"; then
+                  echo "$output" >&2
+                  exit 1
+                fi
+              fi

@@ -32,7 +32,7 @@ metadata:
   labels:
     {{- include "obarena.labels" . | nindent 4 }}
 spec:
-  minAvailable: 1
+  maxUnavailable: 1
   selector:
     matchLabels:
       app.kubernetes.io/name: telemetry-ingester

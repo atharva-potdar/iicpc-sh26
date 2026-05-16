@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -84,7 +84,7 @@ func wsHandler(rdb *redis.Client, hub *Hub) http.HandlerFunc {
 			InsecureSkipVerify: true,
 		})
 		if err != nil {
-			log.Printf("ws accept: %v", err)
+			slog.Error("ws accept", "error", err)
 			return
 		}
 
@@ -100,7 +100,7 @@ func wsHandler(rdb *redis.Client, hub *Hub) http.HandlerFunc {
 			cancel()
 			hub.unregCh <- c
 			if err := conn.Close(websocket.StatusNormalClosure, ""); err != nil {
-				log.Printf("ws close error: %v", err)
+				slog.Error("ws close error", "error", err)
 			}
 		}()
 
@@ -162,7 +162,7 @@ func buildSnapshot(ctx context.Context, rdb *redis.Client) ([]byte, error) {
 
 		var entry leaderboardEntry
 		if err := json.Unmarshal(blob, &entry); err != nil {
-			log.Printf("unmarshal snapshot entry[%s]: %v", submissionID, err)
+			slog.Error("unmarshal snapshot entry", "submission", submissionID, "error", err)
 			continue
 		}
 		entry.Rank = rank + 1
