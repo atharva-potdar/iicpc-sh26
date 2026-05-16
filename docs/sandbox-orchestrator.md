@@ -1,137 +1,176 @@
 # Sandbox Orchestrator
 
-## Overview
+## Purpose
 
-Consumes `build.complete` events from Redpanda. For each event, downloads
-the compiled binary from SeaweedFS, deploys it as a gVisor-isolated pod in the
-`sandboxes` namespace, waits for the submission to become healthy, and publishes
-a lifecycle event with the result.
+Consumes `build.complete` events from Redpanda. For each event, deploys the compiled binary as an isolated pod in the `sandboxes` namespace using seccomp + AppArmor sandboxing (not gVisor), waits for the submission to become healthy via readiness probe, and publishes a lifecycle event with the pod's connection details. Single responsibility — no HTTP endpoints, no authentication, no build logic.
 
-Single responsibility — no HTTP endpoints, no auth, no build logic.
-Runs as a single consumer in the `platform` namespace.
+## Position in Pipeline
 
----
+Third service in the pipeline. Consumes from `submission.lifecycle` (after build-service) → produces to `submission.lifecycle` (consumed by bot-orchestrator).
 
-## Event Consumption
+## Event Contract
 
-Topic:          submission.lifecycle
-Consumer group: sandbox-orchestrator
-Events handled: build.complete
+**Reads from:** `submission.lifecycle` (consumer group: `sandbox-orchestrator`)
+**Writes to:** `submission.lifecycle`
 
----
+### Consumed: build.complete
 
-## Deployment Flow
+| Field | Type | Description |
+|-------|------|-------------|
+| `event` | string | `"build.complete"` |
+| `submission_id` | string | UUID |
+| `binary_path` | string | `"builds/{submission_id}/binary"` |
+| `language` | string | Language used |
+| `team_name` | string | Team display name |
+| `built_at` | int64 | Unix nanoseconds |
 
-1. Consume `build.complete` event
-2. Create sandbox pod in `sandboxes` namespace:
-   - RuntimeClass: `gvisor` (runsc)
-   - Network ingress allowed only from `bots` namespace (NetworkPolicy)
-   - Network egress denied (NetworkPolicy)
-   - InitContainer downloads binary directly from SeaweedFS to an EmptyDir
-    - Exposes port 8080 (HTTP + WebSocket)
-   - Guaranteed QoS (CPU and memory limits = requests)
-3. Wait for pod to reach Running phase and Ready condition (via native ReadinessProbe)
-4. On success:
-   - Publish `sandbox.ready` event with pod IP and ports
-5. On failure:
-   - Collect pod logs (truncated to MAX_LOG_BYTES)
-   - Publish `sandbox.failed` event with reason
+### Produced: sandbox.ready
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `event` | string | `"sandbox.ready"` |
+| `submission_id` | string | UUID |
+| `pod_name` | string | `"sandbox-{submission_id}"` |
+| `pod_ip` | string | Pod cluster IP |
+| `http_port` | int | `8080` (single port for HTTP + WebSocket) |
+| `ws_port` | int | `8080` (same as http_port — single-port architecture) |
+| `team_name` | string | Team display name |
+| `ready_at` | int64 | Unix nanoseconds |
+
+### Produced: sandbox.failed
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `event` | string | `"sandbox.failed"` |
+| `submission_id` | string | UUID |
+| `reason` | string | Pod error/logs, truncated to `MAX_LOG_BYTES` |
+| `failed_at` | int64 | Unix nanoseconds |
+
+## Operational Flow
+
+1. Consume `build.complete` event from Redpanda (consumer group: `sandbox-orchestrator`)
+2. Create sandbox pod in `sandboxes` namespace with security-hardened spec
+3. InitContainer (`alpine:3.23`) downloads binary from SeaweedFS via wget to EmptyDir
+4. Main container (`alpine:3.23`) executes the binary directly from `/sandbox/binary`
+5. Wait for pod to reach Running phase and Ready condition (via HTTP readiness probe on `/healthz`)
+6. On success:
+   - Get pod IP
+   - Publish `sandbox.ready` event with pod IP and port (8080 for both HTTP and WebSocket)
+7. On failure:
+   - Collect pod logs (truncated to `MAX_LOG_BYTES`)
+   - Publish `sandbox.failed` event
    - Delete sandbox pod
 
----
+## Endpoints
 
-## Sandbox Pod Spec
-
-Runtime:        gvisor (runsc)
-InitContainer:  alpine:3.23 (downloads binary via wget from SeaweedFS)
-Main Container: alpine:3.23 (executes the downloaded binary natively)
-Working dir:    /sandbox
-Ports:          8080 (HTTP + WebSocket)
-Probes:         ReadinessProbe on HTTP 8080 /healthz
-
-Resource Limits (Guaranteed QoS):
-  CPU request:    2
-  CPU limit:      2
-  Memory request: 1Gi
-  Memory limit:   1Gi
-
-Volume:
-  EmptyDir at /sandbox, sizeLimit 256Mi
-
----
-
-## Event Schema
-
-Topic: submission.lifecycle
-Key:   submission_id
-
-sandbox.ready
-{
-  "event":          "sandbox.ready",
-  "submission_id":  "uuid",
-  "pod_name":       "string",
-  "pod_ip":         "10.42.x.x",
-  "http_port":      8080,
-  "ws_port":        8080,
-  "team_name":      "string",
-  "ready_at":       1234567890    // unix nanoseconds
-}
-
-sandbox.failed
-{
-  "event":          "sandbox.failed",
-  "submission_id":  "uuid",
-  "reason":         "string",     // pod logs or error message, truncated to 4KB
-  "failed_at":      1234567890
-}
-
----
+None. This service has no HTTP server.
 
 ## Configuration
 
-SEAWEEDFS_ENDPOINT      SeaweedFS S3 endpoint
-                        default: http://seaweedfs.platform.svc.cluster.local:8333
-REDPANDA_BROKERS        comma-separated broker list
-                        default: redpanda.platform.svc.cluster.local:9092
-SANDBOX_TIMEOUT_SECONDS max time to wait for sandbox pod to become healthy
-                        default: 60
-MAX_LOG_BYTES           max pod log output captured on failure
-                        default: 4096
+| Env Var | Default | Description |
+|---------|---------|-------------|
+| `SEAWEEDFS_ENDPOINT` | `http://seaweedfs.platform.svc.cluster.local:8333` | SeaweedFS S3 endpoint |
+| `REDPANDA_BROKERS` | `redpanda.platform.svc.cluster.local:9092` | Comma-separated broker list |
+| `SANDBOX_TIMEOUT_SECONDS` | `60` | Max time to wait for sandbox to become healthy |
+| `MAX_LOG_BYTES` | `4096` | Max pod log output captured on failure |
+| `SANDBOX_CPU_REQUEST` | `2` | CPU request for sandbox pods |
+| `SANDBOX_CPU_LIMIT` | `2` | CPU limit for sandbox pods |
+| `SANDBOX_MEMORY_REQUEST` | `512Mi` | Memory request for sandbox pods |
+| `SANDBOX_MEMORY_LIMIT` | `512Mi` | Memory limit for sandbox pods |
+| `SANDBOX_SECCOMP_PROFILE_PATH` | `sandbox-seccomp.json` | Seccomp profile filename |
+| `SANDBOX_RUN_AS_USER` | `65534` | UID for sandbox containers (nobody) |
+| `SANDBOX_NODE_SELECTOR_KEY` | `workload` | Node selector key |
+| `SANDBOX_NODE_SELECTOR_VALUE` | `sandbox` | Node selector value |
+| `SANDBOX_TOLERATION_KEY` | `workload` | Toleration key |
+| `SANDBOX_TOLERATION_VALUE` | `sandbox` | Toleration value |
 
----
+## Dependencies
 
-## Security Model
+- SeaweedFS in `platform` namespace (S3-compatible storage, bucket: `builds`)
+- Redpanda in `platform` namespace
+- Kubernetes API (in-cluster config)
+- `github.com/twmb/franz-go` — Redpanda consumer/producer
+- `github.com/aws/aws-sdk-go-v2` — S3 client
+- `k8s.io/client-go` — Kubernetes client
 
-- Sandbox pods run with gVisor (runsc) — kernel syscall isolation
-- Network ingress restricted to `bots` namespace only (NetworkPolicy: allow-ingress-from-bots)
-- Network egress fully denied (NetworkPolicy: allow-ingress-from-bots, policyTypes includes Egress with no egress rules)
-- Pods run as non-root where possible
-- No service account token mounted in sandbox pods
-- EmptyDir with sizeLimit prevents disk abuse
+## Sandbox Pod Spec
 
----
+| Property | Value |
+|----------|-------|
+| Namespace | `sandboxes` |
+| Image | `alpine:3.23` |
+| Command | `/sandbox/binary` (executed directly) |
+| Working directory | `/sandbox` |
+| Port | `8080` (HTTP + WebSocket, single port) |
+| Readiness probe | HTTP GET `/healthz` on port 8080, initial delay 1s, period 2s, failure threshold 3 |
+| Restart policy | Never |
+| Automount service account token | `false` |
+| Node selector | `workload=sandbox` |
+| Toleration | `workload=sandbox:NoSchedule` |
 
-## RBAC
+### Volumes
 
-Uses the `sandbox-orchestrator` ServiceAccount (platform namespace).
-Bound to `sandbox-pod-manager` Role in `sandboxes` namespace:
+| Name | Type | Mount | Size |
+|------|------|-------|------|
+| `sandbox` | EmptyDir | `/sandbox` | 256Mi |
+| `tmp` | EmptyDir | `/tmp` | unlimited |
 
-- pods:     create, get, list, watch, delete
-- pods/log: get
+### Resource Limits (Guaranteed QoS)
 
-Also bound to `runtimeclass-reader` ClusterRole:
+| Resource | Request | Limit |
+|----------|---------|-------|
+| CPU | 2 | 2 |
+| Memory | 512Mi | 512Mi |
 
-- runtimeclasses: get, list
+### Security Context
 
----
+| Property | Value |
+|----------|-------|
+| `runAsNonRoot` | `true` |
+| `runAsUser` | `65534` (nobody) |
+| `allowPrivilegeEscalation` | `false` |
+| `readOnlyRootFilesystem` | `true` |
+| `capabilities.drop` | `["ALL"]` |
+| `seccompProfile.type` | `Localhost` |
+| `seccompProfile.localhostProfile` | `sandbox-seccomp.json` |
+| `appArmorProfile.type` | `RuntimeDefault` |
 
 ## Constraints
 
-- Sandbox pods run in the `sandboxes` namespace with gVisor isolation
-- Sandbox pods have no outbound network access
-- Sandbox pods can only receive traffic from the `bots` namespace
-- Binary must be a statically-linked executable (dynamic linking may fail under gVisor)
+- Sandbox pods run in `sandboxes` namespace with seccomp + AppArmor isolation (no gVisor)
+- Network ingress restricted to `bots` namespace only (NetworkPolicy: `allow-ingress-from-bots`)
+- Network egress: only allowed to SeaweedFS in `platform` namespace on port 8333 (NetworkPolicy: `allow-seaweedfs-egress`)
+- Binary must be a statically-linked executable
 - Binary size limit: 50MB (inherited from build service)
 - Sandbox timeout: 60 seconds (configurable) — time to reach healthy state
-- One sandbox per submission (previous sandbox for same submission should be cleaned up)
-- Sandbox orchestrator uses the sandbox-orchestrator ServiceAccount for K8s API access
+- One sandbox per submission
+- Failed sandboxes are cleaned up automatically
+
+## RBAC
+
+Uses the `sandbox-orchestrator` ServiceAccount (in `platform` namespace).
+
+Bound to `sandbox-pod-manager` Role in `sandboxes` namespace:
+- `pods`: create, get, list, watch, delete
+- `pods/log`: get
+
+Bound to `runtimeclass-reader` ClusterRole (cluster-wide):
+- `runtimeclasses`: get, list
+
+## Helm Resources
+
+| Property | Value |
+|----------|-------|
+| CPU request | 250m |
+| CPU limit | 500m |
+| Memory request | 128Mi |
+| Memory limit | 256Mi |
+| HPA | 1–6 replicas, 60% CPU target |
+
+## TODO
+
+- `log.Fatal` used directly in `main()` instead of `run()` helper pattern
+- `log.Printf` used instead of `slog` structured logging
+- Kafka topic `submission.lifecycle` hardcoded as string literal in `publisher.go`
+- `ProduceSync` called without `context.WithTimeout` — risk of hung goroutine if broker is down
+- S3 credentials use static `credentials.NewStaticCredentialsProvider("any", "any", "")` — should migrate to Helm-managed secrets

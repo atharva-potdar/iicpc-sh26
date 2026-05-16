@@ -1,112 +1,160 @@
 # Bot Orchestrator
 
-## Overview
+## Purpose
 
-Consumes `sandbox.ready` events from Redpanda. For each event, spawns a bot
-runner Job in the `bots` namespace pointed at the sandbox pod's IP and ports.
-Waits for the Job to complete, then deletes the sandbox pod and publishes a
-lifecycle event with the result.
+Consumes `sandbox.ready` events from Redpanda. For each event, spawns a bot runner Job in the `bots` namespace pointed at the sandbox pod's WebSocket endpoint. Waits for the Job to complete, then deletes both the sandbox pod and the bot runner Job, and publishes a `test.complete` lifecycle event. Also exposes HTTP endpoints for manual test triggering and status checking. Runs as a singleton (no HPA) to prevent duplicate test runs.
 
-Single responsibility — no HTTP endpoints, no build logic, no scoring.
-Runs as a single consumer in the `platform` namespace.
+## Position in Pipeline
 
----
+Fourth service in the pipeline. Consumes from `submission.lifecycle` (after sandbox-orchestrator) → produces to `submission.lifecycle` (final stage event). The bot runner Job it creates publishes to `bot.metrics` topic → consumed by telemetry-ingester.
 
-## Event Consumption
+## Event Contract
 
-Topic:          submission.lifecycle
-Consumer group: bot-orchestrator
-Events handled: sandbox.ready
+**Reads from:** `submission.lifecycle` (consumer group: `bot-orchestrator`)
+**Writes to:** `submission.lifecycle`
 
----
+### Consumed: sandbox.ready
 
-## Orchestration Flow
+| Field | Type | Description |
+|-------|------|-------------|
+| `event` | string | `"sandbox.ready"` |
+| `submission_id` | string | UUID |
+| `pod_name` | string | Sandbox pod name |
+| `pod_ip` | string | Sandbox pod cluster IP |
+| `http_port` | int | 8080 |
+| `ws_port` | int | 8080 (same as http_port) |
+| `team_name` | string | Team display name |
+| `ready_at` | int64 | Unix nanoseconds |
 
-1. Consume `sandbox.ready` event
-2. Spawn bot runner Job in `bots` namespace:
-   - Image: bot-runner:dev
-   - Target endpoint from event: `ws://{pod_ip}:{ws_port}/stream`
-   - Test run ID: submission_id
-   - Configured via env vars
-3. Wait for Job to complete (succeeded or failed)
-4. Collect Job logs
-5. Delete sandbox pod from `sandboxes` namespace
+### Produced: test.complete
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `event` | string | `"test.complete"` |
+| `submission_id` | string | UUID |
+| `team_name` | string | Team display name |
+| `success` | bool | Whether the test completed successfully |
+| `reason` | string | Empty on success, error message on failure |
+| `completed_at` | int64 | Unix nanoseconds |
+
+## Operational Flow
+
+1. Consume `sandbox.ready` event from Redpanda (consumer group: `bot-orchestrator`)
+2. Acquire running lock (mutex) — only one test at a time
+3. Create bot runner Job in `bots` namespace:
+   - Target endpoint: `ws://{pod_ip}:{ws_port}/stream`
+   - Pass team name, submission ID, bot count, duration, Redpanda brokers as env vars
+4. Wait 15 seconds for sandbox warmup
+5. Watch Job until it succeeds or fails (timeout: `JOB_TIMEOUT_SECONDS`)
 6. Delete bot runner Job from `bots` namespace
-7. Publish `test.complete` event with result
+7. Delete sandbox pod from `sandboxes` namespace
+8. Publish `test.complete` event
+9. Release running lock
 
----
+## Endpoints
 
-## Bot Runner Job Spec
+### `POST /run`
 
-Image:          bot-runner:dev
-Restart policy: Never
-Parallelism:    1
-Completions:    1
+Manually trigger a test run. Accepts optional JSON body matching `SandboxReadyEvent` schema. Fields default to:
+- `submission_id`: `"manual-run"`
+- `pod_ip`: `"submission-api.platform.svc.cluster.local"`
+- `ws_port`: `8080`
+- `team_name`: `"manual-team"`
 
-Environment:
-  TARGET_ENDPOINT       ws://{pod_ip}:{ws_port}/stream
-  NUM_BOTS              50
-  DURATION_SECONDS      60
-  TEST_RUN_ID           {submission_id}
-  REDPANDA_BROKERS      {redpanda_brokers}
+**Response 202:** `{ "status": "started" }`
+**Response 409:** `Test already in progress` (if a test is already running)
 
-Resource Limits:
-  CPU request:    500m
-  CPU limit:      2
-  Memory request: 256Mi
-  Memory limit:   512Mi
+### `GET /status`
 
----
+Returns current test run status.
 
-## Event Schema
+**Response 200:** `{ "status": "idle" | "running" }`
 
-Topic: submission.lifecycle
-Key:   submission_id
+### `GET /healthz`
 
-test.complete
-{
-  "event":          "test.complete",
-  "submission_id":  "uuid",
-  "team_name":      "string",
-  "success":        true | false,
-  "reason":         "string",     // empty on success, error on failure
-  "completed_at":   1234567890    // unix nanoseconds
-}
-
----
+**Response 200:** `ok` (plain text)
 
 ## Configuration
 
-REDPANDA_BROKERS        comma-separated broker list
-                        default: redpanda.platform.svc.cluster.local:9092
-NUM_BOTS                number of concurrent bot goroutines per runner
-                        default: 50
-DURATION_SECONDS        how long to run the bot fleet
-                        default: 60
-JOB_TIMEOUT_SECONDS     max time to wait for bot runner Job to complete
-                        default: 120
+| Env Var | Default | Description |
+|---------|---------|-------------|
+| `REDPANDA_BROKERS` | `redpanda.platform.svc.cluster.local:9092` | Comma-separated broker list |
+| `NUM_BOTS` | `50` | Number of concurrent bot goroutines per runner |
+| `DURATION_SECONDS` | `60` | How long to run the bot fleet |
+| `JOB_TIMEOUT_SECONDS` | `120` | Max time to wait for bot runner Job to complete |
+| `BOT_RUNNER_IMAGE` | `bot-runner:dev` | Container image for bot runner Jobs |
 
----
+## Dependencies
 
-## RBAC
+- Redpanda in `platform` namespace
+- Kubernetes API (in-cluster config)
+- `github.com/twmb/franz-go` — Redpanda consumer/producer
+- `k8s.io/client-go` — Kubernetes client
 
-Uses the `sandbox-orchestrator` ServiceAccount (platform namespace).
-Needs additional permissions:
+## Bot Runner Job Spec
 
-In `bots` namespace:
-- jobs:     create, get, list, watch, delete
-- pods:     get, list, watch
-- pods/log: get
+| Property | Value |
+|----------|-------|
+| Namespace | `bots` |
+| Image | `bot-runner:dev` (configurable via `BOT_RUNNER_IMAGE`) |
+| Restart policy | Never |
+| Parallelism | 1 |
+| Completions | 1 |
+| Backoff limit | 0 |
+| TTL after finished | 300s |
 
-In `sandboxes` namespace:
-- pods: delete (already granted via sandbox-pod-manager Role)
+### Environment Variables
 
----
+| Env Var | Value |
+|---------|-------|
+| `TARGET_ENDPOINT` | `ws://{pod_ip}:{ws_port}/stream` |
+| `NUM_BOTS` | From config (default: 50) |
+| `DURATION_SECONDS` | From config (default: 60) |
+| `TEAM_NAME` | From sandbox.ready event |
+| `TEST_RUN_ID` | submission_id from event |
+| `REDPANDA_BROKERS` | From config |
+
+### Resource Limits
+
+| Resource | Request | Limit |
+|----------|---------|-------|
+| CPU | 100m | 2 |
+| Memory | 512Mi | 1Gi |
 
 ## Constraints
 
-- One bot runner Job per sandbox, run once then tear down
+- Singleton service — only one test run at a time (mutex-guarded)
+- Both Kafka-triggered and HTTP-triggered runs share the same running lock
 - Sandbox pod is always deleted after test, regardless of outcome
 - Bot runner Job is always deleted after completion, regardless of outcome
-- Bot orchestrator uses the sandbox-orchestrator ServiceAccount for k8s API access
-- NUM_BOTS and DURATION_SECONDS are platform-controlled — contestants cannot influence them
+- 15-second warmup period before Job execution begins
+- `NUM_BOTS` and `DURATION_SECONDS` are platform-controlled — contestants cannot influence them
+
+## RBAC
+
+Uses the `bot-orchestrator` ServiceAccount (in `platform` namespace).
+Bound to `bot-job-manager` Role in `bots` namespace:
+
+- `jobs`: create, get, list, watch, delete
+- `pods`: get, list, watch
+- `pods/log`: get
+
+Also deletes sandbox pods in `sandboxes` namespace (uses CoreV1().Pods() directly, no RBAC binding exists for this cross-namespace delete — see TODO).
+
+## Helm Resources
+
+| Property | Value |
+|----------|-------|
+| CPU request | 100m |
+| CPU limit | 250m |
+| Memory request | 64Mi |
+| Memory limit | 128Mi |
+| HPA | None (singleton) |
+
+## TODO
+
+- `log.Fatal` used directly in `main()` instead of `run()` helper pattern
+- `log.Printf` used instead of `slog` structured logging
+- Kafka topic `submission.lifecycle` hardcoded as string literal in `publisher.go`
+- `ProduceSync` called without `context.WithTimeout` — risk of hung goroutine if broker is down
+- Bot orchestrator deletes sandbox pods in `sandboxes` namespace but has no RBAC binding for that namespace (only has `bot-job-manager` Role in `bots` namespace) — relies on default permissions or may fail in strict RBAC environments

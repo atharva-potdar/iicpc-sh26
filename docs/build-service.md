@@ -1,101 +1,145 @@
 # Build Service
 
-## Overview
+## Purpose
 
-Consumes `submission.created` events from Redpanda. For each event, downloads
-the source artifact from SeaweedFS, spawns an isolated build pod in the `builds`
-namespace, compiles the code, uploads the resulting binary back to SeaweedFS,
-and publishes a lifecycle event with the result.
+Consumes `submission.created` events from Redpanda. For each event, downloads the source artifact from SeaweedFS, spawns an isolated build pod in the `builds` namespace, compiles the code using a language-specific toolchain, uploads the resulting binary back to SeaweedFS, and publishes a lifecycle event with the result. Single responsibility — no HTTP endpoints, no authentication, no sandboxing.
 
-Single responsibility — no HTTP endpoints, no auth, no sandboxing.
-Runs as a single consumer in the `platform` namespace.
+## Position in Pipeline
 
----
+Second service in the pipeline. Consumes from `submission.lifecycle` (after submission-api) → produces to `submission.lifecycle` (consumed by sandbox-orchestrator).
 
-## Event Consumption
+## Event Contract
 
-Topic:          submission.lifecycle
-Consumer group: build-service
-Events handled: submission.created
+**Reads from:** `submission.lifecycle` (consumer group: `build-service`)
+**Writes to:** `submission.lifecycle`
 
----
+### Consumed: submission.created
 
-## Build Flow
+| Field | Type | Description |
+|-------|------|-------------|
+| `event` | string | `"submission.created"` |
+| `submission_id` | string | UUID |
+| `language` | string | `"cpp"`, `"rust"`, or `"go"` |
+| `team_name` | string | Team display name |
+| `artifact_path` | string | `"submissions/{submission_id}.tar.gz"` |
+| `created_at` | int64 | Unix nanoseconds |
 
-1. Consume `submission.created` event
-2. Download artifact from SeaweedFS at `event.artifact_path`
-3. Spawn build pod in `builds` namespace:
-   - Network egress denied (NetworkPolicy)
-   - Pod runs `sleep infinity` as entrypoint to stay alive
-   - Language-specific image and build command
-   - CPU and memory limits enforced
-4. Wait for pod to reach Running phase
-5. Stream source tar.gz into pod via K8s exec API (`tar xzf -`)
-6. Execute language-specific build command via K8s exec API
-7. On success:
+### Produced: build.complete
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `event` | string | `"build.complete"` |
+| `submission_id` | string | UUID |
+| `binary_path` | string | `"builds/{submission_id}/binary"` |
+| `language` | string | Language used |
+| `team_name` | string | Team display name |
+| `built_at` | int64 | Unix nanoseconds |
+
+### Produced: build.failed
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `event` | string | `"build.failed"` |
+| `submission_id` | string | UUID |
+| `reason` | string | Compiler error output, truncated to `MAX_LOG_BYTES` |
+| `failed_at` | int64 | Unix nanoseconds |
+
+## Operational Flow
+
+1. Consume `submission.created` event from Redpanda (consumer group: `build-service`)
+2. Download source tar.gz from SeaweedFS at `event.artifact_path`
+3. Validate tar.gz: no symlinks, no path traversal, valid gzip
+4. Create build pod in `builds` namespace with language-specific image
+5. Wait for pod to reach Running phase
+6. Stream source into pod via K8s exec API (`tar xzf - -C /workspace`)
+7. Execute language-specific build command via K8s exec API
+8. On success:
+   - Verify binary exists and is under 50MB
    - Read binary from pod via K8s exec API
-   - Upload binary to SeaweedFS at `builds/{submission_id}/binary`
+   - Upload to SeaweedFS at `builds/{submission_id}/binary`
    - Publish `build.complete` event
-8. On failure:
-   - Publish `build.failed` event with compiler output (truncated to MAX_LOG_BYTES)
-9. Delete build pod (always, regardless of outcome)
+9. On failure:
+   - Publish `build.failed` event with truncated compiler stderr
+10. Delete build pod (always, regardless of outcome)
+11. Commit consumer offsets
 
----
+## Endpoints
 
-## Build Images and Commands
-
-| Language | Image            | Build command                                                         |
-|----------|------------------|-----------------------------------------------------------------------|
-| cpp      | gcc:16-trixie    | g++ -static -O2 -o binary main.cpp                                   |
-| rust     | rust:1.95-alpine | RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --offline |
-| go       | golang:1.26-alpine | CGO_ENABLED=0 go build -mod=vendor -o binary .                      |
-
----
-
-## Event Schema
-
-Topic: submission.lifecycle
-Key:   submission_id
-
-build.complete
-{
-  "event":          "build.complete",
-  "submission_id":  "uuid",
-  "binary_path":    "builds/{submission_id}/binary",
-  "language":       "cpp" | "rust" | "go",
-  "team_name":      "string",
-  "built_at":       1234567890    // unix nanoseconds
-}
-
-build.failed
-{
-  "event":          "build.failed",
-  "submission_id":  "uuid",
-  "reason":         "string",     // compiler error output, truncated to 4KB
-  "failed_at":      1234567890
-}
-
----
+None. This service has no HTTP server.
 
 ## Configuration
 
-SEAWEEDFS_ENDPOINT    SeaweedFS S3 endpoint
-                      default: http://seaweedfs.platform.svc.cluster.local:8333
-REDPANDA_BROKERS      comma-separated broker list
-                      default: redpanda.platform.svc.cluster.local:9092
-BUILD_TIMEOUT_SECONDS max time to wait for a build pod to complete
-                      default: 120
-MAX_LOG_BYTES         max compiler output captured on failure
-                      default: 4096
+| Env Var | Default | Description |
+|---------|---------|-------------|
+| `SEAWEEDFS_ENDPOINT` | `http://seaweedfs.platform.svc.cluster.local:8333` | SeaweedFS S3 endpoint |
+| `REDPANDA_BROKERS` | `redpanda.platform.svc.cluster.local:9092` | Comma-separated broker list |
+| `BUILD_TIMEOUT_SECONDS` | `120` | Max time to wait for build completion |
+| `MAX_LOG_BYTES` | `4096` | Max compiler output captured on failure |
 
----
+## Dependencies
+
+- SeaweedFS in `platform` namespace (S3-compatible storage)
+- Redpanda in `platform` namespace
+- Kubernetes API (in-cluster config)
+- `github.com/twmb/franz-go` — Redpanda consumer/producer
+- `github.com/aws/aws-sdk-go-v2` — S3 client
+- `k8s.io/client-go` — Kubernetes client
+
+## Build Toolchains
+
+| Language | Image | Build Command |
+|----------|-------|---------------|
+| `cpp` | `gcc:16-trixie` | `g++ -static -O2 -o /workspace/binary /workspace/main.cpp` |
+| `rust` | `rust:1.95-alpine` | `cd /workspace && RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --offline && cp $(find target/release -maxdepth 1 -type f -perm -111 ! -name '*.d' \| head -1) /workspace/binary` |
+| `go` | `golang:1.26-alpine` | `cd /workspace && CGO_ENABLED=0 go build -mod=vendor -o /workspace/binary .` |
+
+All binaries are statically linked for portability.
+
+## Build Pod Spec
+
+| Property | Value |
+|----------|-------|
+| Namespace | `builds` |
+| Image | Language-specific (see table above) |
+| Entrypoint | `sh -c "trap 'exit 0' TERM; sleep infinity & wait $!"` |
+| Working directory | `/workspace` |
+| Volume | EmptyDir at `/workspace`, sizeLimit 512Mi |
+| CPU request | 1 |
+| CPU limit | 2 |
+| Memory request | 512Mi |
+| Memory limit | 2Gi |
 
 ## Constraints
 
-- Build pods run in the `builds` namespace with default-deny egress
-- Build pods have no network access — cannot download dependencies. The build pod will have no internet during the build process. Anything that is not vendored or requires internet access to build will fail the build process.
-- Submissions must be the entire project, with vendored dependencies
+- Build pods run in `builds` namespace with default-deny egress NetworkPolicy
+- No network access during build — all dependencies must be vendored
 - Binary size limit: 50MB
-- Build timeout: 120 seconds (configurable)
-- One build at a time per submission (no parallel builds for same ID)
-- Build service uses the sandbox-orchestrator ServiceAccount for k8s API access
+- Source archive validated for symlinks and path traversal before extraction
+- Build pod always deleted after completion (success or failure)
+- Consumer group `build-service` ensures each submission is processed once
+
+## RBAC
+
+Uses the `build-service` ServiceAccount (in `platform` namespace).
+Bound to `build-pod-manager` Role in `builds` namespace:
+
+- `pods`: create, get, list, watch, delete
+- `pods/exec`: create
+- `pods/log`: get
+
+## Helm Resources
+
+| Property | Value |
+|----------|-------|
+| CPU request | 500m |
+| CPU limit | 1000m |
+| Memory request | 512Mi |
+| Memory limit | 1024Mi |
+| HPA | 1–8 replicas, 60% CPU target |
+
+## TODO
+
+- `log.Fatal` used directly in `main()` instead of `run()` helper pattern (BUG.md reference)
+- `log.Printf` used instead of `slog` structured logging
+- Kafka topic `submission.lifecycle` hardcoded as string literal in `publisher.go`
+- `ProduceSync` called without `context.WithTimeout` — risk of hung goroutine if broker is down

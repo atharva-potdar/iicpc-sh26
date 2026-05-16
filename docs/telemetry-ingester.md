@@ -1,143 +1,137 @@
 # Telemetry Ingester
 
-## Overview
+## Purpose
 
-Consumes `bot.metrics` events from Redpanda. For each event, writes raw
-telemetry to TimescaleDB for historical analysis and computes a composite
-score which is written to Redis for live leaderboard ranking.
+Consumes `bot.metrics` events from Redpanda. For each event, writes raw telemetry to TimescaleDB for historical analysis and computes a composite score which is written to Redis for live leaderboard ranking. Single responsibility — no HTTP endpoints, no Kubernetes API calls, no bot logic.
 
-Single responsibility — no HTTP endpoints, no k8s API calls, no bot logic.
-Runs as a single consumer in the `platform` namespace.
+## Position in Pipeline
 
----
+Final processing stage. Consumes from `bot.metrics` (published by bot-runner Jobs) → writes to TimescaleDB (historical storage) and Redis (live leaderboard). Redis is then consumed by leaderboard-ws for WebSocket push to frontend.
 
-## Event Consumption
+## Event Contract
 
-Topic:          bot.metrics
-Consumer group: telemetry-ingester
-Events handled: bot.metrics
+**Reads from:** `bot.metrics` (consumer group: `telemetry-ingester`)
 
----
+### Consumed: bot.metrics
 
-## Ingestion Flow
+| Field | Type | Description |
+|-------|------|-------------|
+| `event` | string | `"bot.metrics"` |
+| `team_name` | string | Team display name |
+| `submission_id` | string | UUID |
+| `test_run_id` | string | Test run identifier |
+| `duration_ms` | int64 | Test duration in milliseconds |
+| `orders_sent` | int64 | Total orders sent during load test |
+| `acks_recv` | int64 | Total acknowledgments received |
+| `fills_recv` | int64 | Total fills received |
+| `rejects_recv` | int64 | Total rejects received |
+| `conn_drops` | int64 | Connection drops/errors |
+| `ack_p50_us` | int64 | Ack latency p50 (microseconds) |
+| `ack_p90_us` | int64 | Ack latency p90 (microseconds) |
+| `ack_p99_us` | int64 | Ack latency p99 (microseconds) |
+| `ack_p999_us` | int64 | Ack latency p99.9 (microseconds) |
+| `ack_max_us` | int64 | Ack latency max (microseconds) |
+| `fill_p50_us` | int64 | Fill latency p50 (microseconds) |
+| `fill_p90_us` | int64 | Fill latency p90 (microseconds) |
+| `fill_p99_us` | int64 | Fill latency p99 (microseconds) |
+| `fill_p999_us` | int64 | Fill latency p99.9 (microseconds) |
+| `fill_max_us` | int64 | Fill latency max (microseconds) |
+| `tps` | float64 | Sustained transactions per second |
+| `correctness_score` | float64 | Correctness validation score [0, 1] |
+| `emitted_at` | int64 | Unix nanoseconds |
 
-1. Consume `bot.metrics` event
-2. Buffer events in memory. Every 500ms flush via pgx.Batch to TimescaleDB `telemetry_events` table
-3. Compute composite score from event metrics
-4. Buffer scores in memory. Every 500ms flush via pgx.Batch to TimescaleDB `submission_scores` table
-5. Update Redis sorted set with composite score (ZADD leaderboard)
-6. Publish JSON payload to Redis pub/sub channel `leaderboard_updates` for real-time WebSocket push
+## Operational Flow
 
----
+1. Consume `bot.metrics` event from Redpanda (consumer group: `telemetry-ingester`)
+2. Compute composite score from event metrics
+3. Buffer event+score pair in memory (buffer capacity: 1000)
+4. Flush buffer every 500ms to TimescaleDB via `pgx.Batch`:
+   - Insert into `telemetry_events` table
+   - Upsert into `submission_scores` table (ON CONFLICT DO UPDATE)
+5. Update Redis leaderboard:
+   - `ZADD leaderboard <score * 1000> "{submission_id}:{team_name}"`
+   - `HSET leaderboard_details {submission_id} <JSON payload>`
+   - `PUBLISH leaderboard_updates <JSON payload>`
+6. Log ingestion summary
 
-## Composite Score Formula
+## Endpoints
 
-The composite score is a weighted combination of three dimensions:
-
-  score = (latency_score *0.4) + (throughput_score* 0.4) + (correctness_score * 0.2)
-
-Where:
-
-  latency_score    = 1 - (ack_p99_us / max_acceptable_p99_us)
-                     clamped to [0, 1]
-                     max_acceptable_p99_us = 100,000 (100ms)
-
-  throughput_score = tps / max_acceptable_tps
-                     clamped to [0, 1]
-                     max_acceptable_tps = 10,000
-
-  correctness_score = 1 - (rejects_recv / orders_sent)
-                      clamped to [0, 1]
-                      0 rejects = perfect correctness score
-
-Final score is in range [0, 1]. Higher is better.
-
----
-
-## Storage
-
-### TimescaleDB
-
-Table: telemetry_events
-One row per bot.metrics event received.
-
-Table: submission_scores
-One row per submission. Upserted on each event — last write wins.
-
-### Redis
-
-Key:   leaderboard
-Type:  Sorted Set
-Score: composite score * 1000 (integer, higher is better)
-Member: "{submission_id}:{team_name}"
-
-ZADD leaderboard <score> <member>
-PUBLISH leaderboard_updates {"submission_id": "uuid", "team_name": "name", "score": 0.8500}
-
-The leaderboard frontend reads from this sorted set via ZREVRANGE
-to get rankings in descending score order on startup, and subscribes to `leaderboard_updates` for real-time live updates.
-
----
-
-## Event Schema
-
-Consumed from topic: bot.metrics
-
-{
-  "event":          "bot.metrics",
-  "submission_id":  "uuid",
-  "test_run_id":    "uuid",
-  "duration_ms":    60000,
-  "orders_sent":    178276,
-  "acks_recv":      356552,
-  "fills_recv":     180404,
-  "rejects_recv":   0,
-  "conn_drops":     6,
-  "ack_p50_us":     1445,
-  "ack_p90_us":     14319,
-  "ack_p99_us":     55711,
-  "ack_p999_us":    70655,
-  "ack_max_us":     90879,
-  "fill_p50_us":    1613,
-  "fill_p90_us":    14791,
-  "fill_p99_us":    60639,
-  "fill_p999_us":   71359,
-  "fill_max_us":    90879,
-  "tps":            2970.72,
-  "emitted_at":     1234567890
-}
-
----
+None. This service has no HTTP server.
 
 ## Configuration
 
-REDPANDA_BROKERS        comma-separated broker list
-                        default: redpanda.platform.svc.cluster.local:9092
-TIMESCALEDB_DSN         postgres connection string
-                        default: postgres://postgres:iicpc@timescaledb.platform.svc.cluster.local:5432/iicpc
-REDIS_ADDR              Redis address
-                        default: redis.platform.svc.cluster.local:6379
-MAX_ACCEPTABLE_P99_US   p99 latency ceiling for scoring
-                        default: 100000
-MAX_ACCEPTABLE_TPS      TPS ceiling for scoring
-                        default: 10000
-
----
+| Env Var | Default | Description |
+|---------|---------|-------------|
+| `REDPANDA_BROKERS` | `redpanda.platform.svc.cluster.local:9092` | Comma-separated broker list |
+| `TIMESCALEDB_DSN` | `postgres://<user>:<password>@timescaledb.platform.svc.cluster.local:5432/iicpc` | PostgreSQL connection string |
+| `REDIS_ADDR` | `redis.platform.svc.cluster.local:6379` | Redis address |
+| `REDIS_PASSWORD` | *(empty)* | Redis password |
+| `MAX_LATENCY_US` | `50000.0` | Latency ceiling for scoring (microseconds) |
+| `MAX_TPS` | `1000.0` | TPS ceiling for scoring |
 
 ## Dependencies
 
-- github.com/twmb/franz-go/pkg/kgo    Redpanda consumer
-- github.com/jackc/pgx/v5             TimescaleDB client
-- github.com/jackc/pgx/v5/pgxpool     TimescaleDB connection pool
-- github.com/redis/go-redis/v9         Redis client
+- Redpanda in `platform` namespace
+- TimescaleDB in `platform` namespace
+- Redis in `platform` namespace
+- `github.com/twmb/franz-go/pkg/kgo` — Redpanda consumer
+- `github.com/jackc/pgx/v5` — TimescaleDB client
+- `github.com/jackc/pgx/v5/pgxpool` — Connection pool
+- `github.com/redis/go-redis/v9` — Redis client
 
----
+## Scoring Formula
+
+Composite score = `(latency_score * 0.35) + (throughput_score * 0.35) + (correctness_score * 0.30)`
+
+### Latency Score
+
+Weighted combination of ack latency percentiles:
+```
+weighted_latency_us = ack_p50 * 0.2 + ack_p90 * 0.3 + ack_p99 * 0.5
+latency_score = 1 - (weighted_latency_us / MAX_LATENCY_US)
+```
+Clamped to [0, 1]. p99 carries the most weight (0.5) because tail latency is the primary discriminator under load.
+
+### Throughput Score
+
+```
+throughput_score = tps / MAX_TPS
+```
+Clamped to [0, 1].
+
+### Correctness Score
+
+```
+correctness_score = event.CorrectnessScore
+```
+Clamped to [0, 1]. Derived from the two-phase correctness validation run by bot-runner (5 deterministic sequences, 33 assertions total).
+
+## Redis Leaderboard Mechanics
+
+| Key | Type | Purpose |
+|-----|------|---------|
+| `leaderboard` | Sorted Set | Rankings by composite score (score * 1000) |
+| `leaderboard_details` | Hash | Full JSON payload per submission_id |
+| `leaderboard_updates` | Pub/Sub channel | Live update fan-out to WebSocket clients |
+
+**Member format:** `"{submission_id}:{team_name}"`
+
+**Score scaling:** composite score multiplied by 1000 for integer precision in Redis sorted set.
 
 ## Constraints
 
-- Telemetry ingester is not on the critical path — a slow write to
-  TimescaleDB does not block the pipeline
-- If TimescaleDB write fails, log and continue — do not crash
-- If Redis write fails, log and continue — do not crash
-- Consumer group offset is committed after both writes succeed
-- One ingester instance — no concurrency needed at this scale
+- Not on the critical path — slow TimescaleDB writes do not block the pipeline
+- If TimescaleDB write fails, log and continue
+- If Redis write fails, log and continue
+- Event buffer capacity: 1000 events
+- Flush interval: 500ms
+- Final flush on shutdown (with 100ms wait for flushLoop to complete)
+
+## TODO
+
+- `log.Fatal` used directly in `main()` instead of `run()` helper pattern
+- `log.Printf` used instead of `slog` structured logging
+- `TIMESCALEDB_DSN` default contains plaintext password `iicpc` — should use placeholder format and rely on Helm-managed secrets
+- No graceful shutdown — `context.Background()` used for consumer run, no signal handling
+- Redis ZADD member format `"{submission_id}:{team_name}"` causes collisions on team rename (BUG.md #108)
+- Consumer group offset is not explicitly committed — relies on franz-go auto-commit

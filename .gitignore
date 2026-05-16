@@ -4,3 +4,9 @@
 # .tfstate files
 *.tfstate
 *.tfstate.*
+
+# Local files for keeping track of what to do next
+AGENTS.md
+SPEC.md
+docs/BUG.md
+docs/progress.md
