@@ -24,6 +24,7 @@ type Ingester struct {
 	redis                *redis.Client
 	maxAcceptableLatencyUS float64 // ceiling for the weighted p50/p90/p99 score
 	maxAcceptableTPS     float64
+	lifecycleCtx          context.Context
 
 	mu          sync.Mutex
 	eventBuffer []EventScorePair
@@ -31,7 +32,7 @@ type Ingester struct {
 	closeCh     chan struct{}
 }
 
-func NewIngester(dsn, redisAddr, redisPass string, maxLatencyUS, maxTPS float64) (*Ingester, error) {
+func NewIngester(lifecycleCtx context.Context, dsn, redisAddr, redisPass string, maxLatencyUS, maxTPS float64) (*Ingester, error) {
 	ctx := context.Background()
 
 	// Connect Redis
@@ -51,6 +52,7 @@ func NewIngester(dsn, redisAddr, redisPass string, maxLatencyUS, maxTPS float64)
 		redis:                rdb,
 		maxAcceptableLatencyUS: maxLatencyUS,
 		maxAcceptableTPS:     maxTPS,
+		lifecycleCtx:          lifecycleCtx,
 		eventBuffer:          make([]EventScorePair, 0, 1000),
 		flushTicker:          time.NewTicker(500 * time.Millisecond),
 		closeCh:              make(chan struct{}),
@@ -65,12 +67,12 @@ func (i *Ingester) flushLoop() {
 	for {
 		select {
 		case <-i.flushTicker.C:
-			flushCtx, flushCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			flushCtx, flushCancel := context.WithTimeout(i.lifecycleCtx, 10*time.Second)
 			i.flush(flushCtx)
 			flushCancel()
 		case <-i.closeCh:
 			i.flushTicker.Stop()
-			flushCtx, flushCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			flushCtx, flushCancel := context.WithTimeout(i.lifecycleCtx, 10*time.Second)
 			i.flush(flushCtx)
 			flushCancel()
 			return

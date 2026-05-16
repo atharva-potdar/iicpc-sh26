@@ -36,7 +36,10 @@ func run() error {
 	maxLatencyUS := envFloat("MAX_LATENCY_US", 50000.0)
 	maxTPS := envFloat("MAX_TPS", 1000.0)
 
-	ingester, err := NewIngester(dsn, redisAddr, redisPass, maxLatencyUS, maxTPS)
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	ingester, err := NewIngester(ctx, dsn, redisAddr, redisPass, maxLatencyUS, maxTPS)
 	if err != nil {
 		return fmt.Errorf("init ingester: %v", err)
 	}
@@ -49,9 +52,6 @@ func run() error {
 	defer consumer.Close()
 
 	log.Printf("telemetry-ingester started")
-
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
 
 	consumer.Run(ctx, ingester.Handle)
 

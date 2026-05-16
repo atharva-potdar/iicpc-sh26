@@ -55,7 +55,9 @@ func run() error {
 
 	log.Println("build-service starting")
 	if err := consumer.Run(ctx); err != nil {
-		return fmt.Errorf("consumer: %v", err)
+		if ctx.Err() == nil {
+			return fmt.Errorf("consumer: %v", err)
+		}
 	}
 	log.Println("build-service stopped")
 

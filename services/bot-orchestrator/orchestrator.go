@@ -136,7 +136,9 @@ func (o *Orchestrator) runTest(ctx context.Context, event SandboxReadyEvent) err
 		return err
 	}
 
-	_ = o.deleteJob(ctx, jobName)
+	if delErr := o.deleteJob(ctx, jobName); delErr != nil {
+		log.Printf("failed to delete job %s after success: %v", jobName, delErr)
+	}
 	return nil
 }
 

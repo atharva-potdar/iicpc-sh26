@@ -112,7 +112,7 @@ func (o *Orchestrator) Deploy(ctx context.Context, event BuildCompleteEvent) (*D
 	success := false
 	defer func() {
 		if !success {
-			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			cleanupCtx, cleanupCancel := context.WithTimeout(ctx, 30*time.Second)
 			defer cleanupCancel()
 			o.cleanupPod(cleanupCtx, podName)
 		}
@@ -120,7 +120,7 @@ func (o *Orchestrator) Deploy(ctx context.Context, event BuildCompleteEvent) (*D
 
 	// Wait for pod to be running and ready
 	if err := o.waitForPodRunning(ctx, pod.Name); err != nil {
-		logsCtx, logsCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		logsCtx, logsCancel := context.WithTimeout(ctx, 15*time.Second)
 		defer logsCancel()
 		logs := o.collectPodLogs(logsCtx, podName)
 		reason := fmt.Sprintf("wait for pod failed: %v\n\npod logs:\n%s", err, logs)
