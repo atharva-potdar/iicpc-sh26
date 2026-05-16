@@ -164,7 +164,8 @@ func (o *Orchestrator) waitForJob(ctx context.Context, jobName string) error {
 	defer watcher.Stop()
 
 	for event := range watcher.ResultChan() {
-		if event.Type == watch.Modified {
+		switch event.Type {
+		case watch.Modified:
 			job, ok := event.Object.(*batchv1.Job)
 			if !ok {
 				continue
@@ -176,7 +177,13 @@ func (o *Orchestrator) waitForJob(ctx context.Context, jobName string) error {
 			if job.Status.Failed > 0 {
 				return fmt.Errorf("job %s failed", jobName)
 			}
+		case watch.Error:
+			return fmt.Errorf("watch error: %v", event.Object)
 		}
+	}
+
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
 	return fmt.Errorf("job %s timed out after %ds", jobName, o.cfg.JobTimeoutSec)
 }

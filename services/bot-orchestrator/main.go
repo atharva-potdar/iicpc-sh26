@@ -83,6 +83,9 @@ func (s *Server) runHandler(w http.ResponseWriter, r *http.Request) {
 
 	go func() {
 		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("panic in runHandler goroutine", "error", r)
+			}
 			s.mu.Lock()
 			s.isRunning = false
 			s.mu.Unlock()
@@ -192,6 +195,11 @@ func run() error {
 
 	go func() {
 		consumer.Run(ctx, func(c context.Context, e SandboxReadyEvent) {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("panic in consumer callback", "error", r)
+				}
+			}()
 			srv.mu.Lock()
 			if srv.isRunning {
 				srv.mu.Unlock()
@@ -213,7 +221,7 @@ func run() error {
 
 	<-ctx.Done()
 	slog.Info("shutting down")
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("http server shutdown: %w", err)

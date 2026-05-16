@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/coder/websocket"
 	"github.com/redis/go-redis/v9"
@@ -73,7 +74,11 @@ func (h *Hub) run() {
 
 // broadcast enqueues a message for fan-out to all connected clients.
 func (h *Hub) broadcast(msg []byte) {
-	h.msgCh <- msg
+	select {
+	case h.msgCh <- msg:
+	default:
+		slog.Warn("hub msgCh full, dropping broadcast")
+	}
 }
 
 // wsHandler upgrades the HTTP connection to WebSocket, sends a full leaderboard
@@ -98,7 +103,12 @@ func wsHandler(rdb *redis.Client, hub *Hub) http.HandlerFunc {
 		ctx, cancel := context.WithCancel(r.Context())
 		defer func() {
 			cancel()
-			hub.unregCh <- c
+			select {
+			case hub.unregCh <- c:
+			default:
+				// If unregCh is full, we don't block. The client will eventually
+				// be cleaned up or the hub will catch up.
+			}
 			if err := conn.Close(websocket.StatusNormalClosure, ""); err != nil {
 				slog.Error("ws close error", "error", err)
 			}
@@ -115,9 +125,24 @@ func wsHandler(rdb *redis.Client, hub *Hub) http.HandlerFunc {
 
 		// Writer goroutine: drains c.send and writes to the WebSocket.
 		go func() {
-			for msg := range c.send {
-				if err := conn.Write(ctx, websocket.MessageText, msg); err != nil {
-					cancel()
+			ticker := time.NewTicker(30 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case msg, ok := <-c.send:
+					if !ok {
+						return
+					}
+					if err := conn.Write(ctx, websocket.MessageText, msg); err != nil {
+						cancel()
+						return
+					}
+				case <-ticker.C:
+					if err := conn.Ping(ctx); err != nil {
+						cancel()
+						return
+					}
+				case <-ctx.Done():
 					return
 				}
 			}
@@ -140,22 +165,48 @@ func buildSnapshot(ctx context.Context, rdb *redis.Client) ([]byte, error) {
 		return nil, err
 	}
 
-	entries := make([]leaderboardEntry, 0, len(members))
-	for rank, z := range members {
-		submissionID := strings.SplitN(z.Member.(string), ":", 2)[0]
+	type snapshotMsg struct {
+		Type    string             `json:"type"`
+		Entries []leaderboardEntry `json:"entries"`
+	}
 
-		blob, err := rdb.HGet(ctx, "leaderboard_details", submissionID).Bytes()
+	entries := make([]leaderboardEntry, 0, len(members))
+	if len(members) == 0 {
+		return json.Marshal(snapshotMsg{Type: "snapshot", Entries: entries})
+	}
+
+	// Pipelined fetch of all entry details to avoid N+1 queries.
+	pipe := rdb.Pipeline()
+	cmds := make([]*redis.StringCmd, len(members))
+	for i, z := range members {
+		memberStr, ok := z.Member.(string)
+		if !ok {
+			continue
+		}
+		submissionID := strings.SplitN(memberStr, ":", 2)[0]
+		cmds[i] = pipe.HGet(ctx, "leaderboard_details", submissionID)
+	}
+	_, _ = pipe.Exec(ctx) // individual errors handled below
+
+	for i, z := range members {
+		memberStr, ok := z.Member.(string)
+		if !ok {
+			continue
+		}
+		parts := strings.SplitN(memberStr, ":", 2)
+		submissionID := parts[0]
+		teamName := ""
+		if len(parts) == 2 {
+			teamName = parts[1]
+		}
+
+		blob, err := cmds[i].Bytes()
 		if err != nil {
-			parts := strings.SplitN(z.Member.(string), ":", 2)
-			teamName := ""
-			if len(parts) == 2 {
-				teamName = parts[1]
-			}
 			entries = append(entries, leaderboardEntry{
 				SubmissionID: submissionID,
 				TeamName:     teamName,
 				Score:        z.Score / 1000,
-				Rank:         rank + 1,
+				Rank:         i + 1,
 			})
 			continue
 		}
@@ -165,15 +216,9 @@ func buildSnapshot(ctx context.Context, rdb *redis.Client) ([]byte, error) {
 			slog.Error("unmarshal snapshot entry", "submission", submissionID, "error", err)
 			continue
 		}
-		entry.Rank = rank + 1
+		entry.Rank = i + 1
 		entries = append(entries, entry)
 	}
 
-	// Wrap in a snapshot envelope so the client can distinguish an initial
-	// snapshot from a single-entry live update.
-	type snapshotMsg struct {
-		Type    string             `json:"type"`
-		Entries []leaderboardEntry `json:"entries"`
-	}
 	return json.Marshal(snapshotMsg{Type: "snapshot", Entries: entries})
 }

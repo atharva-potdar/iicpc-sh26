@@ -101,7 +101,7 @@ func truncate(s string, max int) string {
 		return s
 	}
 	s = s[:max]
-	for !utf8.ValidString(s) {
+	for len(s) > 0 && !utf8.ValidString(s) {
 		s = s[:len(s)-1]
 	}
 	return s

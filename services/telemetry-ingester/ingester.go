@@ -65,6 +65,10 @@ func NewIngester(lifecycleCtx context.Context, dsn, redisAddr, redisPass string,
 		closeCh:                make(chan struct{}),
 	}
 
+	if ingester.maxAcceptableLatencyUS <= 0 {
+		return nil, fmt.Errorf("MAX_LATENCY_US must be > 0, got %v", ingester.maxAcceptableLatencyUS)
+	}
+
 	go ingester.flushLoop()
 
 	return ingester, nil

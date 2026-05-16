@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/twmb/franz-go/pkg/kgo"
 )
@@ -50,28 +51,34 @@ func (c *Consumer) Run(ctx context.Context) error {
 			for _, e := range errs {
 				slog.Error("fetch error", "topic", e.Topic, "partition", e.Partition, "error", e.Err)
 			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(1 * time.Second):
+			}
 			continue
 		}
 
-		fetches.EachRecord(func(record *kgo.Record) {
-			c.handleRecord(ctx, record)
-		})
-
-		if err := c.client.CommitUncommittedOffsets(ctx); err != nil {
-			slog.Error("commit offsets", "error", err)
+		for _, record := range fetches.Records() {
+			if err := c.handleRecord(ctx, record); err != nil {
+				return fmt.Errorf("handle record: %w", err)
+			}
+			if err := c.client.CommitRecords(ctx, record); err != nil {
+				return fmt.Errorf("commit record: %w", err)
+			}
 		}
 	}
 }
 
-func (c *Consumer) handleRecord(ctx context.Context, record *kgo.Record) {
+func (c *Consumer) handleRecord(ctx context.Context, record *kgo.Record) error {
 	var event SubmissionCreatedEvent
 	if err := json.Unmarshal(record.Value, &event); err != nil {
 		slog.Error("unmarshal event", "error", err)
-		return
+		return nil // skip malformed events
 	}
 
 	if event.Event != "submission.created" {
-		return
+		return nil
 	}
 
 	slog.Info("processing build",
@@ -86,15 +93,17 @@ func (c *Consumer) handleRecord(ctx context.Context, record *kgo.Record) {
 		if pubErr := c.publisher.PublishBuildFailed(ctx, event.SubmissionID, err.Error()); pubErr != nil {
 			slog.Error("publish build.failed", "error", pubErr)
 		}
-		return
+		return nil // we published a failure, so this record is "handled"
 	}
 
 	slog.Info("build complete", "submission", event.SubmissionID, "binary", result.BinaryPath)
 	if pubErr := c.publisher.PublishBuildComplete(
 		ctx, event.SubmissionID, result.BinaryPath, event.Language, event.TeamName,
 	); pubErr != nil {
-		slog.Error("publish build.complete", "error", pubErr)
+		return fmt.Errorf("publish build.complete: %w", pubErr)
 	}
+
+	return nil
 }
 
 func (c *Consumer) Close() {

@@ -82,8 +82,7 @@ func (cb *CorrectnessBot) runSequence(ctx context.Context, seq Sequence) (int, [
 	}()
 
 	tagToID := make(map[string]string)
-	stepCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
+
 
 	for i, step := range seq.Steps {
 		var oid string
@@ -106,8 +105,14 @@ func (cb *CorrectnessBot) runSequence(ctx context.Context, seq Sequence) (int, [
 			))
 		}
 
+		// 5s deadline for the entire step (send + receive)
+		stepDeadline := time.Now().Add(5 * time.Second)
+		stepCtx, stepCancel := context.WithDeadline(ctx, stepDeadline)
+		// We call stepCancel() at the end of the step processing.
+
 		// Send
 		if err := conn.Write(stepCtx, websocket.MessageText, payload); err != nil {
+			stepCancel()
 			failures = append(failures, fmt.Sprintf("step %d: write: %v", i, err))
 			return passed, failures
 		}
@@ -123,11 +128,9 @@ func (cb *CorrectnessBot) runSequence(ctx context.Context, seq Sequence) (int, [
 		// Read messages until we have enough to assert.
 		// For an order: expect ack, then possibly fill.
 		// For a cancel: expect cancel_ack.
-		deadline := time.Now().Add(5 * time.Second)
-		for time.Now().Before(deadline) {
-			readCtx, readCancel := context.WithDeadline(stepCtx, deadline)
-			_, rawBytes, err := conn.Read(readCtx)
-			readCancel()
+		for time.Now().Before(stepDeadline) {
+			_, rawBytes, err := conn.Read(stepCtx)
+
 			if err != nil {
 				if ctx.Err() != nil {
 					failures = append(failures, fmt.Sprintf("step %d: context cancelled", i))
@@ -235,6 +238,7 @@ func (cb *CorrectnessBot) runSequence(ctx context.Context, seq Sequence) (int, [
 				}
 			}
 		}
+		stepCancel()
 	}
 
 	return passed, failures

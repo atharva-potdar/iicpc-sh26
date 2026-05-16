@@ -30,7 +30,13 @@ func envInt(key string, def int) int {
 
 func run() error {
 	seaweedfsEndpoint := envStr("SEAWEEDFS_ENDPOINT", "http://seaweedfs.platform.svc.cluster.local:8333")
-	redpandaBrokers := strings.Split(envStr("REDPANDA_BROKERS", "redpanda.platform.svc.cluster.local:9092"), ",")
+	rawBrokers := envStr("REDPANDA_BROKERS", "redpanda.platform.svc.cluster.local:9092")
+	var redpandaBrokers []string
+	for _, b := range strings.Split(rawBrokers, ",") {
+		if trimmed := strings.TrimSpace(b); trimmed != "" {
+			redpandaBrokers = append(redpandaBrokers, trimmed)
+		}
+	}
 	topic := envStr("KAFKA_TOPIC", "submission.lifecycle")
 
 	cfg := SandboxConfig{

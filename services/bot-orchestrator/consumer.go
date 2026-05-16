@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"os"
 
 	"github.com/twmb/franz-go/pkg/kgo"
 )
@@ -30,6 +31,7 @@ func NewConsumer(brokers []string, topic string) (*Consumer, error) {
 		kgo.ConsumerGroup("bot-orchestrator"),
 		kgo.ConsumeTopics(topic),
 		kgo.DisableAutoCommit(),
+		kgo.WithLogger(kgo.BasicLogger(os.Stderr, kgo.LogLevelInfo, nil)),
 	)
 	if err != nil {
 		return nil, err
@@ -51,6 +53,7 @@ func (c *Consumer) Run(ctx context.Context, handler func(context.Context, Sandbo
 				Event string `json:"event"`
 			}
 			if err := json.Unmarshal(r.Value, &base); err != nil {
+				slog.Warn("malformed JSON in record", "error", err, "topic", r.Topic, "partition", r.Partition, "offset", r.Offset)
 				return
 			}
 			if base.Event != "sandbox.ready" {
@@ -58,15 +61,17 @@ func (c *Consumer) Run(ctx context.Context, handler func(context.Context, Sandbo
 			}
 			var event SandboxReadyEvent
 			if err := json.Unmarshal(r.Value, &event); err != nil {
-				slog.Error("unmarshal sandbox.ready", "err", err)
+				slog.Error("failed to unmarshal sandbox.ready", "error", err)
 				return
 			}
 			handler(ctx, event)
+			if err := c.client.CommitRecords(ctx, r); err != nil {
+				slog.Error("failed to commit record", "error", err)
+			}
 		})
 
-		if err := c.client.CommitUncommittedOffsets(ctx); err != nil {
-			slog.Error("commit offsets", "err", err)
-		}
+		// We use manual per-record commit, so no need for CommitUncommittedOffsets here
+		// unless we want to commit skipped records.
 	}
 }
 

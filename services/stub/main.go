@@ -9,9 +9,11 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"regexp"
 	"sort"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -19,7 +21,23 @@ import (
 	"github.com/coder/websocket/wsjson"
 )
 
-func now() int64 { return time.Now().UnixNano() }
+var orderIDRegex = regexp.MustCompile(`^[A-Za-z0-9/-]+$`)
+
+
+var lastTimestamp atomic.Int64
+
+func now() int64 {
+	ts := time.Now().UnixNano()
+	for {
+		old := lastTimestamp.Load()
+		if ts <= old {
+			ts = old + 1
+		}
+		if lastTimestamp.CompareAndSwap(old, ts) {
+			return ts
+		}
+	}
+}
 
 func min64(a, b int64) int64 {
 	if a < b {
@@ -235,18 +253,18 @@ func (ob *Orderbook) rest(order *Order) {
 	}
 }
 
-func (ob *Orderbook) remove(orderID, side string) {
+func (ob *Orderbook) remove(orderID string) {
 	order, exists := ob.orders[orderID]
 	if !exists {
 		return
 	}
 	delete(ob.orders, orderID)
 
-	if side == "buy" {
+	if order.Side == "buy" {
 		if order.index >= 0 && order.index < len(ob.bids) {
 			heap.Remove(&ob.bids, order.index)
 		}
-	} else {
+	} else if order.Side == "sell" {
 		if order.index >= 0 && order.index < len(ob.asks) {
 			heap.Remove(&ob.asks, order.index)
 		}
@@ -287,9 +305,13 @@ type Session struct {
 	send    chan any
 	ctx     context.Context
 	latency time.Duration
+	wg      sync.WaitGroup
 }
 
 func (s *Session) writeLoop() {
+	defer s.wg.Done()
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
 	for {
 		select {
 		case msg, ok := <-s.send:
@@ -297,6 +319,13 @@ func (s *Session) writeLoop() {
 				return
 			}
 			if err := wsjson.Write(s.ctx, s.conn, msg); err != nil {
+				if !errors.Is(err, context.Canceled) {
+					slog.Error("write error", "session", s.id, "error", err)
+				}
+				return
+			}
+		case <-ticker.C:
+			if err := s.conn.Ping(s.ctx); err != nil {
 				return
 			}
 		case <-s.ctx.Done():
@@ -311,7 +340,7 @@ func (s *Session) handleOrder(msg IncomingMessage) {
 	}
 
 	// Validate fields
-	if msg.OrderID == "" ||
+	if len(msg.OrderID) == 0 || len(msg.OrderID) > 64 || !orderIDRegex.MatchString(msg.OrderID) ||
 		(msg.Side != "buy" && msg.Side != "sell") ||
 		(msg.OrderType != "limit" && msg.OrderType != "market") {
 		s.send <- RejectMessage{
@@ -358,18 +387,23 @@ func (s *Session) handleOrder(msg IncomingMessage) {
 		index:     -1,
 	}
 
-	// Ack immediately, before matching. Send is non-blocking (buffered channel).
-	s.send <- AckMessage{Type: "ack", OrderID: msg.OrderID, Timestamp: order.EnteredAt}
+	// Messages to send outside the lock
+	var toSend []any
+
+	// Ack immediately, before matching.
+	toSend = append(toSend, AckMessage{Type: "ack", OrderID: msg.OrderID, Timestamp: order.EnteredAt})
 
 	fills := s.ob.match(order)
+	for i := range fills {
+		toSend = append(toSend, fills[i])
+	}
 
-	var reject *RejectMessage
 	if order.OrderType == "market" && order.Remaining > 0 {
 		// Market order could not fully fill — reject remaining
-		reject = &RejectMessage{
+		toSend = append(toSend, RejectMessage{
 			Type: "reject", OrderID: msg.OrderID,
 			Reason: "no_liquidity", Timestamp: now(),
-		}
+		})
 	} else if order.Remaining > 0 {
 		// Limit order rests on the book
 		s.ob.rest(order)
@@ -377,11 +411,8 @@ func (s *Session) handleOrder(msg IncomingMessage) {
 
 	s.ob.mu.Unlock()
 
-	for i := range fills {
-		s.send <- fills[i]
-	}
-	if reject != nil {
-		s.send <- reject
+	for _, m := range toSend {
+		s.send <- m
 	}
 }
 
@@ -396,7 +427,15 @@ func (s *Session) handleCancel(msg IncomingMessage) {
 		}
 		return
 	}
-	s.ob.remove(msg.OrderID, order.Side)
+	if order.SessionID != s.id {
+		s.ob.mu.Unlock()
+		s.send <- RejectMessage{
+			Type: "reject", OrderID: msg.OrderID,
+			Reason: "unauthorized", Timestamp: now(),
+		}
+		return
+	}
+	s.ob.remove(msg.OrderID)
 	s.ob.mu.Unlock()
 
 	s.send <- CancelAckMessage{Type: "cancel_ack", OrderID: msg.OrderID, Timestamp: now()}
@@ -418,8 +457,6 @@ type SnapshotResponse struct {
 func orderbookHandler(ob *Orderbook) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ob.mu.Lock()
-		defer ob.mu.Unlock()
-
 		bidMap := make(map[float64]int64)
 		askMap := make(map[float64]int64)
 		for _, o := range ob.bids {
@@ -428,6 +465,7 @@ func orderbookHandler(ob *Orderbook) http.HandlerFunc {
 		for _, o := range ob.asks {
 			askMap[o.Price] += o.Remaining
 		}
+		ob.mu.Unlock()
 
 		bids := make([]PriceLevel, 0, len(bidMap))
 		asks := make([]PriceLevel, 0, len(askMap))
@@ -471,9 +509,12 @@ func streamHandler(latency time.Duration, ob *Orderbook) http.HandlerFunc {
 			latency: latency,
 		}
 
+		s.wg.Add(1)
 		go s.writeLoop()
 		defer func() {
 			s.ob.cancelSession(s.id)
+			close(s.send)
+			s.wg.Wait()
 			if err := conn.Close(websocket.StatusNormalClosure, ""); err != nil {
 				slog.Error("ws close error", "err", err)
 			}
@@ -482,6 +523,9 @@ func streamHandler(latency time.Duration, ob *Orderbook) http.HandlerFunc {
 		for {
 			var msg IncomingMessage
 			if err := wsjson.Read(ctx, conn, &msg); err != nil {
+				if !errors.Is(err, context.Canceled) && websocket.CloseStatus(err) != websocket.StatusNormalClosure {
+					slog.Error("read error", "session", s.id, "error", err)
+				}
 				return
 			}
 			switch msg.Type {

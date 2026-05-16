@@ -220,9 +220,8 @@ func (b *Bot) Run(ctx context.Context, duration time.Duration, ready chan<- stru
 				mu.Lock()
 				pending[oid] = pendingOrder{time.Now()}
 				b.metrics.ordersSent++
-				mu.Unlock()
-
 				inFlight.Add(1)
+				mu.Unlock()
 			}
 
 			if err := conn.Write(ctx, websocket.MessageText, payload); err != nil {

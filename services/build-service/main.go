@@ -62,6 +62,7 @@ func run() error {
 
 	slog.Info("build-service starting")
 	if err := consumer.Run(ctx); err != nil {
+		slog.Error("consumer error", "err", err)
 		if ctx.Err() == nil {
 			return fmt.Errorf("consumer: %v", err)
 		}

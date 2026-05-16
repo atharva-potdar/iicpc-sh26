@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -24,7 +25,10 @@ type Publisher struct {
 }
 
 func NewPublisher(brokers []string, topic string) (*Publisher, error) {
-	client, err := kgo.NewClient(kgo.SeedBrokers(brokers...))
+	client, err := kgo.NewClient(
+		kgo.SeedBrokers(brokers...),
+		kgo.WithLogger(kgo.BasicLogger(os.Stderr, kgo.LogLevelInfo, nil)),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("new kafka client: %w", err)
 	}

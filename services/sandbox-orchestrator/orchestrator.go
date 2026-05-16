@@ -18,6 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"regexp"
 )
 
 const (
@@ -54,6 +55,7 @@ type Orchestrator struct {
 	k8sClient         kubernetes.Interface
 	restConfig        *rest.Config
 	cfg               SandboxConfig
+	binaryPathRegex   *regexp.Regexp
 }
 
 func NewOrchestrator(seaweedfsEndpoint string, cfg SandboxConfig) (*Orchestrator, error) {
@@ -89,6 +91,7 @@ func NewOrchestrator(seaweedfsEndpoint string, cfg SandboxConfig) (*Orchestrator
 		k8sClient:         k8s,
 		restConfig:        restCfg,
 		cfg:               cfg,
+		binaryPathRegex:   regexp.MustCompile(`^[A-Za-z0-9/_.-]+$`),
 	}, nil
 }
 
@@ -113,15 +116,17 @@ func (o *Orchestrator) Deploy(ctx context.Context, event BuildCompleteEvent) (*D
 	success := false
 	defer func() {
 		if !success {
-			cleanupCtx, cleanupCancel := context.WithTimeout(ctx, 30*time.Second)
+			// Use context.Background() to ensure cleanup runs even if the main context is cancelled
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cleanupCancel()
 			o.cleanupPod(cleanupCtx, podName)
 		}
 	}()
 
 	// Wait for pod to be running and ready
-	if err := o.waitForPodRunning(ctx, pod.Name); err != nil {
-		logsCtx, logsCancel := context.WithTimeout(ctx, 15*time.Second)
+	if err := o.waitForPodRunning(ctx, pod.Name, pod.ResourceVersion); err != nil {
+		// Use context.Background() for diagnostics to ensure we get logs even if timed out
+		logsCtx, logsCancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer logsCancel()
 		logs := o.collectPodLogs(logsCtx, podName)
 		reason := fmt.Sprintf("wait for pod failed: %v\n\npod logs:\n%s", err, logs)
@@ -150,6 +155,9 @@ func (o *Orchestrator) Deploy(ctx context.Context, event BuildCompleteEvent) (*D
 }
 
 func (o *Orchestrator) createSandboxPod(ctx context.Context, name string, binaryPath string) (*corev1.Pod, error) {
+	if !o.binaryPathRegex.MatchString(binaryPath) {
+		return nil, fmt.Errorf("invalid binary path: %s", binaryPath)
+	}
 	automount := false
 	binaryUrl := fmt.Sprintf("%s/%s/%s", o.seaweedfsEndpoint, binaryBucket, binaryPath)
 
@@ -188,6 +196,7 @@ func (o *Orchestrator) createSandboxPod(ctx context.Context, name string, binary
 						RunAsUser:                &o.cfg.RunAsUser,
 						RunAsNonRoot:             boolPtr(true),
 						AllowPrivilegeEscalation: boolPtr(false),
+						ReadOnlyRootFilesystem:   boolPtr(true),
 					},
 				},
 			},
@@ -213,7 +222,10 @@ func (o *Orchestrator) createSandboxPod(ctx context.Context, name string, binary
 							Drop: []corev1.Capability{"ALL"},
 						},
 						SeccompProfile: &corev1.SeccompProfile{
-							Type:             corev1.SeccompProfileTypeLocalhost,
+							Type: corev1.SeccompProfileTypeLocalhost,
+							// NOTE: The seccomp profile must exist on the kubelet nodes at
+							// /var/lib/kubelet/seccomp/<profile_path>. This is typically
+							// managed via Terraform user-data or a DaemonSet.
 							LocalhostProfile: &o.cfg.SeccompProfile,
 						},
 						AppArmorProfile: &corev1.AppArmorProfile{
@@ -269,9 +281,10 @@ func (o *Orchestrator) createSandboxPod(ctx context.Context, name string, binary
 	return created, nil
 }
 
-func (o *Orchestrator) waitForPodRunning(ctx context.Context, name string) error {
+func (o *Orchestrator) waitForPodRunning(ctx context.Context, name, resourceVersion string) error {
 	watcher, err := o.k8sClient.CoreV1().Pods(sandboxNamespace).Watch(ctx, metav1.ListOptions{
-		FieldSelector: fields.OneTermEqualSelector("metadata.name", name).String(),
+		FieldSelector:   fields.OneTermEqualSelector("metadata.name", name).String(),
+		ResourceVersion: resourceVersion,
 	})
 	if err != nil {
 		return fmt.Errorf("watch pod: %w", err)

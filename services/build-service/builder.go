@@ -154,7 +154,7 @@ func (b *Builder) Build(ctx context.Context, event SubmissionCreatedEvent) (*Bui
 		reason := fmt.Sprintf("build error: %s", buildStderr)
 		if len(reason) > b.maxLogBytes {
 			reason = reason[:b.maxLogBytes]
-			for !utf8.ValidString(reason) {
+			for len(reason) > 0 && !utf8.FullRuneInString(reason[len(reason)-1:]) && !utf8.ValidString(reason) {
 				reason = reason[:len(reason)-1]
 			}
 		}

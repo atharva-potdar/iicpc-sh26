@@ -65,7 +65,9 @@ func run() error {
 	// ── Phase 1: Correctness (synchronous, 1 bot, ~5-10s) ──────────────
 	slog.Info("phase 1: correctness validation", "endpoint", endpoint)
 	cb := NewCorrectnessBot(endpoint)
-	correctnessResult := cb.Run(ctx)
+	cbCtx, cbCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cbCancel()
+	correctnessResult := cb.Run(cbCtx)
 	slog.Info("correctness complete",
 		"score", correctnessResult.Score,
 		"passed", correctnessResult.Passed,
@@ -99,15 +101,28 @@ func run() error {
 		}(bot)
 	}
 
-	slog.Info("waiting for all bots to warm up")
+	slog.Info("waiting for bots to warm up (quorum or timeout)")
+	warmupTimeout := time.After(15 * time.Second)
+	quorum := int(float64(numBots) * 0.8) // 80% quorum
+	readyCount := 0
+
+warmupLoop:
 	for i := 0; i < numBots; i++ {
 		select {
 		case <-readyCh:
+			readyCount++
+			if readyCount >= quorum {
+				slog.Info("quorum reached", "ready", readyCount)
+				break warmupLoop
+			}
+		case <-warmupTimeout:
+			slog.Warn("warmup timeout reached", "ready", readyCount)
+			break warmupLoop
 		case <-testCtx.Done():
 			return testCtx.Err()
 		}
 	}
-	slog.Info("all bots warmed up, starting measurement")
+	slog.Info("starting measurement", "readyCount", readyCount)
 	start := time.Now()
 
 	wg.Wait()
