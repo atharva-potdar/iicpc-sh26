@@ -37,15 +37,25 @@ func NewStorage(endpoint string) (*Storage, error) {
 	return &Storage{client: client}, nil
 }
 
-func (s *Storage) Upload(ctx context.Context, key string, r io.Reader, size int64) error {
+func (s *Storage) Upload(ctx context.Context, key string, r io.Reader) error {
 	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket:        aws.String(bucket),
-		Key:           aws.String(key),
-		Body:          r,
-		ContentLength: aws.Int64(size),
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+		Body:   r,
 	})
 	if err != nil {
 		return fmt.Errorf("put object %s: %w", key, err)
+	}
+	return nil
+}
+
+func (s *Storage) Delete(ctx context.Context, key string) error {
+	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(bucket),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return fmt.Errorf("delete object %s: %w", key, err)
 	}
 	return nil
 }

@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -11,6 +11,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 func envStr(key, def string) string {
@@ -29,7 +31,29 @@ func envInt64(key string, def int64) int64 {
 	return def
 }
 
+type contextKey string
+
+const requestIDKey contextKey = "request_id"
+
+func requestIDMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqID := r.Header.Get("X-Request-ID")
+		if reqID == "" {
+			reqID = uuid.New().String()
+		}
+		ctx := context.WithValue(r.Context(), requestIDKey, reqID)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+func loggerFor(r *http.Request) *slog.Logger {
+	reqID, _ := r.Context().Value(requestIDKey).(string)
+	return slog.With("request_id", reqID)
+}
+
 func run() error {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+
 	seaweedfsEndpoint := envStr("SEAWEEDFS_ENDPOINT", "http://seaweedfs.platform.svc.cluster.local:8333")
 	redpandaBrokers := strings.Split(envStr("REDPANDA_BROKERS", "redpanda.platform.svc.cluster.local:9092"), ",")
 	port := envStr("PORT", "8080")
@@ -52,14 +76,16 @@ func run() error {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if _, err := w.Write([]byte(`{"status":"ok"}`)); err != nil {
-			log.Printf("healthz write error: %v", err)
+			loggerFor(r).Error("healthz write error", "error", err)
 		}
 	})
 	mux.HandleFunc("POST /submissions", h.handleSubmit)
 
-	log.Printf("submission-api listening :%s", port)
+	handler := requestIDMiddleware(mux)
 
-	srv := &http.Server{Addr: ":" + port, Handler: mux}
+	logger.Info("submission-api listening", "port", port)
+
+	srv := &http.Server{Addr: ":" + port, Handler: handler}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
@@ -68,7 +94,7 @@ func run() error {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		if err := srv.Shutdown(shutdownCtx); err != nil {
-			log.Printf("shutdown error: %v", err)
+			logger.Error("shutdown error", "error", err)
 		}
 	}()
 
@@ -81,6 +107,7 @@ func run() error {
 
 func main() {
 	if err := run(); err != nil {
-		log.Fatal(err)
+		slog.Error("fatal", "error", err)
+		os.Exit(1)
 	}
 }

@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
+	"regexp"
 
 	"github.com/google/uuid"
 )
@@ -17,6 +17,10 @@ var allowedLanguages = map[string]bool{
 	"rust": true,
 	"go":   true,
 }
+
+var teamNameRe = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
+const maxTeamNameLen = 64
 
 type Handler struct {
 	storage   *Storage
@@ -45,18 +49,31 @@ func validateTarGz(r io.Reader) error {
 	}
 	defer gr.Close()
 	tr := tar.NewReader(gr)
-	if _, err := tr.Next(); err != nil {
-		return fmt.Errorf("invalid tar: %w", err)
+	for {
+		_, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("invalid tar: %w", err)
+		}
 	}
 	return nil
 }
 
 func (h *Handler) handleSubmit(w http.ResponseWriter, r *http.Request) {
+	log := loggerFor(r)
+
 	r.Body = http.MaxBytesReader(w, r.Body, h.maxBytes)
-	if err := r.ParseMultipartForm(2 << 20); err != nil { // 2MB memory limit, rest to disk
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "file too large"})
+	if err := r.ParseMultipartForm(2 << 20); err != nil {
+		if _, ok := err.(*http.MaxBytesError); ok {
+			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "file too large"})
+		} else {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		}
 		return
 	}
+	defer r.MultipartForm.RemoveAll()
 
 	language := r.FormValue("language")
 	if !allowedLanguages[language] {
@@ -69,8 +86,16 @@ func (h *Handler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "team_name required"})
 		return
 	}
+	if len(teamName) > maxTeamNameLen {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "team_name too long"})
+		return
+	}
+	if !teamNameRe.MatchString(teamName) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "team_name contains invalid characters"})
+		return
+	}
 
-	file, header, err := r.FormFile("source")
+	file, _, err := r.FormFile("source")
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing source file"})
 		return
@@ -82,9 +107,8 @@ func (h *Handler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Rewind the file back to the beginning before uploading
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		log.Printf("seek upload: %v", err)
+		log.Error("seek upload", "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return
 	}
@@ -92,13 +116,8 @@ func (h *Handler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	submissionID := uuid.New().String()
 	artifactPath := fmt.Sprintf("submissions/%s.tar.gz", submissionID)
 
-	if err := h.storage.Upload(
-		r.Context(),
-		artifactPath,
-		file,
-		header.Size,
-	); err != nil {
-		log.Printf("upload to seaweedfs: %v", err)
+	if err := h.storage.Upload(r.Context(), artifactPath, file); err != nil {
+		log.Error("upload to seaweedfs", "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return
 	}
@@ -110,11 +129,14 @@ func (h *Handler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		ArtifactPath: artifactPath,
 	}
 	if err := h.publisher.PublishSubmissionCreated(r.Context(), event); err != nil {
-		log.Printf("publish event: %v", err)
+		log.Error("publish event", "error", err)
+		if delErr := h.storage.Delete(r.Context(), artifactPath); delErr != nil {
+			log.Error("failed to clean up orphaned object", "path", artifactPath, "error", delErr)
+		}
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return
 	}
 
-	log.Printf("submission created: id=%s lang=%s team=%s", submissionID, language, teamName)
+	log.Info("submission created", "id", submissionID, "lang", language, "team", teamName)
 	writeJSON(w, http.StatusAccepted, map[string]string{"submission_id": submissionID})
 }
