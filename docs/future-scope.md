@@ -1,9 +1,5 @@
 # Future Scope
 
-Planned enhancements for the IICPC competitive programming judging platform, organized in phased implementation order. Each phase builds on the previous one; dependencies are noted where applicable.
-
----
-
 ## Phase 1: Event-Driven Autoscaling & Compute Isolation
 
 ### KEDA Kafka-Triggered Autoscaling
