@@ -16,8 +16,7 @@ type SandboxReadyEvent struct {
 	SubmissionID string `json:"submission_id"`
 	PodName      string `json:"pod_name"`
 	PodIP        string `json:"pod_ip"`
-	HTTPPort     int    `json:"http_port"`
-	WSPort       int    `json:"ws_port"`
+	HTTPPort int `json:"http_port"`
 	TeamName     string `json:"team_name"`
 	ReadyAt      int64  `json:"ready_at"`
 }
@@ -56,7 +55,6 @@ func (p *Publisher) PublishSandboxReady(
 		PodName:      podName,
 		PodIP:        podIP,
 		HTTPPort:     httpPort,
-		WSPort:       httpPort,
 		TeamName:     teamName,
 		ReadyAt:      time.Now().UnixNano(),
 	}

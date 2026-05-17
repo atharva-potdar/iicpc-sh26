@@ -119,13 +119,17 @@ warmupLoop:
 			slog.Warn("warmup timeout reached", "ready", readyCount)
 			break warmupLoop
 		case <-testCtx.Done():
-			return testCtx.Err()
+			break warmupLoop
 		}
 	}
 	slog.Info("starting measurement", "readyCount", readyCount)
 	start := time.Now()
 
 	wg.Wait()
+
+	if testCtx.Err() != nil {
+		return testCtx.Err()
+	}
 	elapsed := time.Since(start)
 
 	metrics := make([]*BotMetrics, numBots)

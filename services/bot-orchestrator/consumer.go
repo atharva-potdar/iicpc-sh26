@@ -64,10 +64,17 @@ func (c *Consumer) Run(ctx context.Context, handler func(context.Context, Sandbo
 				slog.Error("failed to unmarshal sandbox.ready", "error", err)
 				return
 			}
-			handler(ctx, event)
-			if err := c.client.CommitRecords(ctx, r); err != nil {
-				slog.Error("failed to commit record", "error", err)
-			}
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						slog.Error("panic in consumer handler", "error", r)
+					}
+				}()
+				handler(ctx, event)
+				if err := c.client.CommitRecords(ctx, r); err != nil {
+					slog.Error("failed to commit record", "error", err)
+				}
+			}()
 		})
 
 		// We use manual per-record commit, so no need for CommitUncommittedOffsets here

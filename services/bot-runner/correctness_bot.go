@@ -133,6 +133,7 @@ func (cb *CorrectnessBot) runSequence(ctx context.Context, seq Sequence) (int, [
 
 			if err != nil {
 				if ctx.Err() != nil {
+					stepCancel()
 					failures = append(failures, fmt.Sprintf("step %d: context cancelled", i))
 					return passed, failures
 				}

@@ -30,6 +30,7 @@ type Ingester struct {
 	eventBuffer []EventScorePair
 	flushTicker *time.Ticker
 	closeCh     chan struct{}
+	doneCh      chan struct{}
 }
 
 func NewIngester(lifecycleCtx context.Context, dsn, redisAddr, redisPass string, maxLatencyUS, maxTPS float64) (*Ingester, error) {
@@ -53,6 +54,7 @@ func NewIngester(lifecycleCtx context.Context, dsn, redisAddr, redisPass string,
 		eventBuffer:            make([]EventScorePair, 0, 1000),
 		flushTicker:            time.NewTicker(500 * time.Millisecond),
 		closeCh:                make(chan struct{}),
+		doneCh:                 make(chan struct{}),
 	}
 
 	if ingester.maxAcceptableLatencyUS <= 0 {
@@ -140,6 +142,7 @@ func (i *Ingester) flushLoop() {
 			flushCtx, flushCancel := context.WithTimeout(i.lifecycleCtx, 10*time.Second)
 			i.flush(flushCtx)
 			flushCancel()
+			close(i.doneCh)
 			return
 		}
 	}
@@ -156,9 +159,26 @@ func (i *Ingester) flush(ctx context.Context) {
 	i.eventBuffer = i.eventBuffer[:0]
 	i.mu.Unlock()
 
-	if err := i.writeBatch(ctx, bufferToFlush); err != nil {
-		slog.Error("flush batch error", "error", err)
+	backoff := time.Second
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				slog.Error("flush cancelled during retry", "error", ctx.Err())
+				return
+			case <-time.After(backoff):
+			}
+			if backoff < 30*time.Second {
+				backoff *= 2
+			}
+		}
+		if err := i.writeBatch(ctx, bufferToFlush); err != nil {
+			slog.Error("flush batch error", "error", err, "attempt", attempt+1)
+			continue
+		}
+		return
 	}
+	slog.Error("flush batch failed after 3 attempts", "dropped_events", len(bufferToFlush))
 }
 
 func (i *Ingester) writeBatch(ctx context.Context, pairs []EventScorePair) error {
@@ -313,7 +333,7 @@ func (i *Ingester) updateLeaderboard(ctx context.Context, event BotMetricsEvent,
 
 func (i *Ingester) Close() {
 	close(i.closeCh)
-	time.Sleep(100 * time.Millisecond) // wait for flushLoop to complete final flush
+	<-i.doneCh
 	i.db.Close()
 	if err := i.redis.Close(); err != nil {
 		slog.Error("redis close error", "error", err)

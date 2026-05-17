@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/twmb/franz-go/pkg/kgo"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
 // BuildCompleteEvent mirrors the event published by the build service.
@@ -96,6 +97,10 @@ func (c *Consumer) handleRecord(ctx context.Context, record *kgo.Record) error {
 
 	result, err := c.orchestrator.Deploy(ctx, event)
 	if err != nil {
+		if k8serrors.IsAlreadyExists(err) {
+			slog.Info("sandbox already exists, treating as success", "submission", event.SubmissionID)
+			return nil
+		}
 		slog.Error("sandbox failed", "submission", event.SubmissionID, "error", err)
 		if pubErr := c.publisher.PublishSandboxFailed(ctx, event.SubmissionID, err.Error()); pubErr != nil {
 			slog.Error("publish sandbox.failed", "error", pubErr)

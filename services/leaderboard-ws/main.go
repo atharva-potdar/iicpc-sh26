@@ -131,13 +131,17 @@ func leaderboardHandler(rdb *redis.Client) http.HandlerFunc {
 
 		entries := make([]leaderboardEntry, 0, len(members))
 		for rank, z := range members {
+			memberStr, ok := z.Member.(string)
+			if !ok {
+				continue
+			}
 			// Member format: "submission_id:team_name"
-			submissionID := strings.SplitN(z.Member.(string), ":", 2)[0]
+			submissionID := strings.SplitN(memberStr, ":", 2)[0]
 
 			blob, err := rdb.HGet(ctx, "leaderboard_details", submissionID).Bytes()
 			if err != nil {
 				// Entry in sorted set but details missing — emit a minimal record.
-				parts := strings.SplitN(z.Member.(string), ":", 2)
+				parts := strings.SplitN(memberStr, ":", 2)
 				teamName := ""
 				if len(parts) == 2 {
 					teamName = parts[1]

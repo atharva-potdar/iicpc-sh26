@@ -98,8 +98,6 @@ func wsHandler(rdb *redis.Client, hub *Hub) http.HandlerFunc {
 			send: make(chan []byte, 256),
 		}
 
-		hub.regCh <- c
-
 		ctx, cancel := context.WithCancel(r.Context())
 		defer func() {
 			cancel()
@@ -113,6 +111,13 @@ func wsHandler(rdb *redis.Client, hub *Hub) http.HandlerFunc {
 				slog.Error("ws close error", "error", err)
 			}
 		}()
+
+		select {
+		case hub.regCh <- c:
+		default:
+			slog.Warn("hub regCh full, rejecting connection")
+			return
+		}
 
 		// Send a full snapshot on connect so the client doesn't have to make a
 		// separate HTTP request before receiving live updates.

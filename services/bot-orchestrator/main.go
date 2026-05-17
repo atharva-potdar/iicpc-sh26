@@ -35,7 +35,7 @@ type Server struct {
 	ctx          context.Context
 	orchestrator *Orchestrator
 	mu           sync.Mutex
-	isRunning    bool
+	activeTests  map[string]bool
 }
 
 func (s *Server) runHandler(w http.ResponseWriter, r *http.Request) {
@@ -43,15 +43,6 @@ func (s *Server) runHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-
-	s.mu.Lock()
-	if s.isRunning {
-		s.mu.Unlock()
-		http.Error(w, "Test already in progress", http.StatusConflict)
-		return
-	}
-	s.isRunning = true
-	s.mu.Unlock()
 
 	var event SandboxReadyEvent
 	if r.Body != nil {
@@ -81,13 +72,22 @@ func (s *Server) runHandler(w http.ResponseWriter, r *http.Request) {
 		event.TeamName = "manual-team"
 	}
 
+	s.mu.Lock()
+	if s.activeTests[event.SubmissionID] {
+		s.mu.Unlock()
+		http.Error(w, "Test already in progress for this submission", http.StatusConflict)
+		return
+	}
+	s.activeTests[event.SubmissionID] = true
+	s.mu.Unlock()
+
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
 				slog.Error("panic in runHandler goroutine", "error", r)
 			}
 			s.mu.Lock()
-			s.isRunning = false
+			delete(s.activeTests, event.SubmissionID)
 			s.mu.Unlock()
 		}()
 		s.orchestrator.Handle(s.ctx, event)
@@ -106,7 +106,7 @@ func (s *Server) statusHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.mu.Lock()
-	running := s.isRunning
+	running := len(s.activeTests) > 0
 	s.mu.Unlock()
 
 	status := "idle"
@@ -173,7 +173,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	srv := &Server{ctx: ctx, orchestrator: orchestrator}
+	srv := &Server{ctx: ctx, orchestrator: orchestrator, activeTests: make(map[string]bool)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/run", srv.runHandler)
 	mux.HandleFunc("/status", srv.statusHandler)
@@ -186,32 +186,33 @@ func run() error {
 
 	httpServer := &http.Server{Addr: ":8080", Handler: mux}
 
+	var wg sync.WaitGroup
+
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		slog.Info("HTTP server listening on :8080")
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("http server", "err", err)
 		}
 	}()
 
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		consumer.Run(ctx, func(c context.Context, e SandboxReadyEvent) {
-			defer func() {
-				if r := recover(); r != nil {
-					slog.Error("panic in consumer callback", "error", r)
-				}
-			}()
 			srv.mu.Lock()
-			if srv.isRunning {
+			if srv.activeTests[e.SubmissionID] {
 				srv.mu.Unlock()
 				slog.Info("ignoring sandbox.ready, test already running", "submission", e.SubmissionID)
 				return
 			}
-			srv.isRunning = true
+			srv.activeTests[e.SubmissionID] = true
 			srv.mu.Unlock()
 
 			defer func() {
 				srv.mu.Lock()
-				srv.isRunning = false
+				delete(srv.activeTests, e.SubmissionID)
 				srv.mu.Unlock()
 			}()
 
@@ -226,6 +227,8 @@ func run() error {
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("http server shutdown: %w", err)
 	}
+
+	wg.Wait()
 
 	return nil
 }
