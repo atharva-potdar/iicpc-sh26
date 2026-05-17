@@ -13,18 +13,49 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: allow-ingress-from-bots
+  name: sandboxes-ingress
   namespace: sandboxes
   labels:
     {{- include "obarena.labels" . | nindent 4 }}
 spec:
   podSelector: {}
-  policyTypes: [Ingress, Egress]
+  policyTypes: [Ingress]
   ingress:
     - from:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: bots
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandboxes-egress
+  namespace: sandboxes
+  labels:
+    {{- include "obarena.labels" . | nindent 4 }}
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: platform
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: seaweedfs
+      ports:
+        - protocol: TCP
+          port: 8333
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -41,6 +72,9 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: sandboxes
+      ports:
+        - protocol: TCP
+          port: 8080
     - to:
         - namespaceSelector:
             matchLabels:
@@ -61,30 +95,6 @@ spec:
         - protocol: TCP
           port: 53
 ---
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: allow-seaweedfs-egress
-  namespace: sandboxes
-  labels:
-    {{- include "obarena.labels" . | nindent 4 }}
-spec:
-  podSelector: {}
-  policyTypes: [Egress]
-  egress:
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: platform
-          podSelector:
-            matchLabels:
-              app.kubernetes.io/name: seaweedfs
-      ports:
-        - protocol: TCP
-          port: 8333
----
-# Single egress policy for platform (do not pair with a separate deny-all policy;
-# on k3s that combination can block API access even when allow rules include :443).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -106,25 +116,13 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
-    # Kubernetes API (ClusterIP :443 and k3s/node backends :6443)
+    # Kubernetes API — scoped to k3s default service CIDR only
     - to:
         - ipBlock:
-            cidr: 10.0.0.0/8
+            cidr: 10.43.0.0/16
       ports:
         - protocol: TCP
           port: 443
-        - protocol: TCP
-          port: 6443
-    - to:
-        - ipBlock:
-            cidr: 172.16.0.0/12
-      ports:
-        - protocol: TCP
-          port: 6443
-    - to:
-        - ipBlock:
-            cidr: 192.168.0.0/16
-      ports:
         - protocol: TCP
           port: 6443
     # Redpanda
@@ -135,6 +133,8 @@ spec:
       ports:
         - protocol: TCP
           port: 9092
+        - protocol: TCP
+          port: 9644
     # Redis
     - to:
         - podSelector:
@@ -158,22 +158,39 @@ spec:
               app.kubernetes.io/name: seaweedfs
       ports:
         - protocol: TCP
-          port: 9333 # master
+          port: 9333
         - protocol: TCP
-          port: 8080 # volume
+          port: 8080
         - protocol: TCP
-          port: 8333 # filer/s3
-    # Sandboxes, Builds, Bots Namespaces
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: sandboxes
+          port: 8333
+    # builds — K8s exec only (platform manages build pods via API, no direct pod traffic)
     - to:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: builds
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6443
+    # sandboxes — K8s API only
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: sandboxes
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6443
+    # bots — K8s API only
     - to:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: bots
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6443
 {{- end }}
