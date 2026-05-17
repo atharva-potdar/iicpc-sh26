@@ -27,6 +27,24 @@ import (
 	"k8s.io/client-go/tools/remotecommand"
 )
 
+type limitWriter struct {
+	w     io.Writer
+	limit int
+	n     int
+}
+
+func (w *limitWriter) Write(p []byte) (int, error) {
+	if w.n >= w.limit {
+		return len(p), nil
+	}
+	if w.n+len(p) > w.limit {
+		p = p[:w.limit-w.n]
+	}
+	n, err := w.w.Write(p)
+	w.n += n
+	return len(p), err
+}
+
 const (
 	buildNamespace     = "builds"
 	srcBucket          = "submissions"
@@ -60,11 +78,10 @@ type Builder struct {
 	s3Client    *s3.Client
 	k8sClient   kubernetes.Interface
 	restConfig  *rest.Config
-	timeout     time.Duration
 	maxLogBytes int
 }
 
-func NewBuilder(seaweedfsEndpoint string, timeoutSec, maxLogBytes int) (*Builder, error) {
+func NewBuilder(seaweedfsEndpoint string, maxLogBytes int) (*Builder, error) {
 	// S3 client for SeaweedFS
 	cfg, err := config.LoadDefaultConfig(
 		context.Background(),
@@ -95,7 +112,6 @@ func NewBuilder(seaweedfsEndpoint string, timeoutSec, maxLogBytes int) (*Builder
 		s3Client:    s3Client,
 		k8sClient:   k8s,
 		restConfig:  restCfg,
-		timeout:     time.Duration(timeoutSec) * time.Second,
 		maxLogBytes: maxLogBytes,
 	}, nil
 }
@@ -108,9 +124,6 @@ func NewBuilder(seaweedfsEndpoint string, timeoutSec, maxLogBytes int) (*Builder
 //  5. Extract the binary and upload to SeaweedFS
 //  6. Cleanup the pod
 func (b *Builder) Build(ctx context.Context, event SubmissionCreatedEvent) (*BuildResult, error) {
-	ctx, cancel := context.WithTimeout(ctx, b.timeout)
-	defer cancel()
-
 	image, ok := buildImages[event.Language]
 	if !ok {
 		return nil, fmt.Errorf("unsupported language: %s", event.Language)
@@ -121,15 +134,19 @@ func (b *Builder) Build(ctx context.Context, event SubmissionCreatedEvent) (*Bui
 	}
 
 	// 1. Download source from SeaweedFS
-	source, err := b.downloadArtifact(ctx, event.ArtifactPath)
+	dlCtx, dlCancel := context.WithTimeout(ctx, 30*time.Second)
+	source, err := b.downloadArtifact(dlCtx, event.ArtifactPath)
+	dlCancel()
 	if err != nil {
 		return nil, fmt.Errorf("download source: %w", err)
 	}
 	slog.Info("downloaded source", "bytes", len(source))
 
 	// 2. Create build pod
+	podCtx, podCancel := context.WithTimeout(ctx, 60*time.Second)
+	defer podCancel()
 	podName := fmt.Sprintf("build-%s", event.SubmissionID)
-	pod, err := b.createBuildPod(ctx, podName, image)
+	pod, err := b.createBuildPod(podCtx, podName, image)
 	if err != nil {
 		return nil, fmt.Errorf("create pod: %w", err)
 	}
@@ -138,18 +155,22 @@ func (b *Builder) Build(ctx context.Context, event SubmissionCreatedEvent) (*Bui
 	defer b.cleanupPod(cleanupCtx, podName)
 
 	// Wait for pod to be running
-	if err := b.waitForPodRunning(ctx, pod.Name); err != nil {
+	if err := b.waitForPodRunning(podCtx, pod.Name); err != nil {
 		return nil, fmt.Errorf("wait for pod: %w", err)
 	}
 	slog.Info("build pod running", "pod", podName)
 
 	// 3. Stream source into pod and extract
-	if err := b.injectSource(ctx, podName, source); err != nil {
+	injectCtx, injectCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer injectCancel()
+	if err := b.injectSource(injectCtx, podName, source); err != nil {
 		return nil, fmt.Errorf("inject source: %w", err)
 	}
 
 	// 4. Execute build
-	buildStderr, err := b.execBuild(ctx, podName, buildCmd)
+	buildCtx, buildCancel := context.WithTimeout(ctx, 120*time.Second)
+	defer buildCancel()
+	buildStderr, err := b.execBuild(buildCtx, podName, buildCmd)
 	if err != nil {
 		reason := fmt.Sprintf("build error: %s", buildStderr)
 		if len(reason) > b.maxLogBytes {
@@ -163,8 +184,10 @@ func (b *Builder) Build(ctx context.Context, event SubmissionCreatedEvent) (*Bui
 	slog.Info("build succeeded", "pod", podName)
 
 	// 5. Extract binary and upload
+	uploadCtx, uploadCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer uploadCancel()
 	binaryPath := fmt.Sprintf("builds/%s/binary", event.SubmissionID)
-	if err := b.extractAndUploadBinary(ctx, podName, binaryPath); err != nil {
+	if err := b.extractAndUploadBinary(uploadCtx, podName, binaryPath); err != nil {
 		return nil, fmt.Errorf("extract binary: %w", err)
 	}
 
@@ -203,7 +226,7 @@ func (b *Builder) createBuildPod(ctx context.Context, name, image string) (*core
 				{
 					Name:       "build",
 					Image:      image,
-					Command:    []string{"sh", "-c", "trap 'exit 0' TERM; sleep infinity & wait $!"},
+					Command:    []string{"sh", "-c", "sleep infinity & wait $!"},
 					WorkingDir: "/workspace",
 					VolumeMounts: []corev1.VolumeMount{
 						{Name: "workspace", MountPath: "/workspace"},
@@ -306,8 +329,9 @@ func (b *Builder) injectSource(ctx context.Context, podName string, tarGz []byte
 
 	cmd := []string{"tar", "xzf", "-", "-C", "/workspace"}
 	var stdout, stderr bytes.Buffer
+	stderrW := &limitWriter{w: &stderr, limit: b.maxLogBytes}
 
-	if err := b.execInPod(ctx, podName, cmd, bytes.NewReader(tarGz), &stdout, &stderr); err != nil {
+	if err := b.execInPod(ctx, podName, cmd, bytes.NewReader(tarGz), &stdout, stderrW); err != nil {
 		return fmt.Errorf("extract source: %s: %w", stderr.String(), err)
 	}
 	return nil
@@ -317,8 +341,9 @@ func (b *Builder) injectSource(ctx context.Context, podName string, tarGz []byte
 func (b *Builder) execBuild(ctx context.Context, podName, buildCmd string) (string, error) {
 	cmd := []string{"sh", "-c", buildCmd}
 	var stdout, stderr bytes.Buffer
+	stderrW := &limitWriter{w: &stderr, limit: b.maxLogBytes}
 
-	if err := b.execInPod(ctx, podName, cmd, nil, &stdout, &stderr); err != nil {
+	if err := b.execInPod(ctx, podName, cmd, nil, &stdout, stderrW); err != nil {
 		return stderr.String(), err
 	}
 	return stderr.String(), nil

@@ -37,7 +37,6 @@ func run() error {
 		}
 	}
 	topic := envStr("KAFKA_TOPIC", "submission.lifecycle")
-	buildTimeout := envInt("BUILD_TIMEOUT_SECONDS", 120)
 	maxLogBytes := envInt("MAX_LOG_BYTES", 4096)
 
 	publisher, err := NewPublisher(redpandaBrokers, topic)
@@ -46,7 +45,7 @@ func run() error {
 	}
 	defer publisher.Close()
 
-	builder, err := NewBuilder(seaweedfsEndpoint, buildTimeout, maxLogBytes)
+	builder, err := NewBuilder(seaweedfsEndpoint, maxLogBytes)
 	if err != nil {
 		return fmt.Errorf("init builder: %v", err)
 	}

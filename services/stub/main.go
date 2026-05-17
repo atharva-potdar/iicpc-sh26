@@ -283,16 +283,7 @@ func (ob *Orderbook) cancelSession(sessionID string) {
 	}
 
 	for _, o := range toRemove {
-		delete(ob.orders, o.OrderID)
-		if o.Side == "buy" {
-			if o.index >= 0 && o.index < len(ob.bids) {
-				heap.Remove(&ob.bids, o.index)
-			}
-		} else {
-			if o.index >= 0 && o.index < len(ob.asks) {
-				heap.Remove(&ob.asks, o.index)
-			}
-		}
+		ob.remove(o.OrderID)
 	}
 }
 
