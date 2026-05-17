@@ -112,7 +112,7 @@ tps = total_orders_sent / elapsed_duration_seconds
 | Key | `leaderboard` |
 | Type | Sorted Set |
 | Score | `composite_score * 1000` (integer for precision) |
-| Member | `"{submission_id}:{team_name}"` |
+| Member | `submission_id` |
 
 Higher score = better rank. `ZREVRANGE` returns members in descending score order.
 
@@ -137,10 +137,11 @@ Higher score = better rank. `ZREVRANGE` returns members in descending score orde
 
 1. telemetry-ingester receives `bot.metrics` event
 2. Computes composite score
-3. `ZADD leaderboard <score * 1000> "{submission_id}:{team_name}"`
-4. `HSET leaderboard_details {submission_id} <JSON entry>`
-5. `PUBLISH leaderboard_updates <JSON entry>`
-6. leaderboard-ws receives pub/sub message, broadcasts to all connected WebSocket clients
+3. Executes atomic Lua script:
+   - `ZADD leaderboard <score * 1000> <submission_id>`
+   - `HSET leaderboard_details {submission_id} <JSON entry>`
+   - `PUBLISH leaderboard_updates <JSON entry>`
+4. leaderboard-ws receives pub/sub message, broadcasts to all connected WebSocket clients
 
 ## TimescaleDB Tables
 
@@ -175,5 +176,4 @@ One row per submission. Upserted on each event (ON CONFLICT DO UPDATE — last w
 
 ## TODO
 
-- Redis ZADD member format `"{submission_id}:{team_name}"` causes collisions on team rename (BUG.md #108)
-- `TIMESCALEDB_DSN` default contains plaintext password (BUG.md reference in telemetry-ingester.md)
+- `TIMESCALEDB_DSN` default contains plaintext password (telemetry-ingester requires it to be set explicitly)

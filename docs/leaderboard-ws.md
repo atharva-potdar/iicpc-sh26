@@ -141,13 +141,13 @@ The `Hub` manages WebSocket client connections using a channel-based fan-out pat
 
 | Key | Type | Purpose |
 |-----|------|---------|
-| `leaderboard` | Sorted Set | Rankings by composite score * 1000 |
+| `leaderboard` | Sorted Set | Rankings by composite score * 1000; member is `submission_id` |
 | `leaderboard_details` | Hash | Full JSON payload per `submission_id` |
 | `leaderboard_updates` | Pub/Sub channel | Live update stream |
 
 **Snapshot construction:**
 1. `ZREVRANGE leaderboard 0 -1 WITHSCORES` — get all members in descending score order
-2. For each member, extract `submission_id` from `"{submission_id}:{team_name}"`
+2. Each member is the `submission_id` directly
 3. `HGET leaderboard_details {submission_id}` — get full JSON payload
 4. Assign rank based on position in sorted set (1-indexed)
 

@@ -10,7 +10,9 @@ Final processing stage. Consumes from `bot.metrics` (published by bot-runner Job
 
 ## Event Contract
 
-**Reads from:** `bot.metrics` (consumer group: `telemetry-ingester`)
+**Consumer group:** `telemetry-ingester`
+
+**Reads from:** `bot.metrics`
 
 ### Consumed: bot.metrics
 
@@ -48,10 +50,14 @@ Final processing stage. Consumes from `bot.metrics` (published by bot-runner Job
 4. Flush buffer every 500ms to TimescaleDB via `pgx.Batch`:
    - Insert into `telemetry_events` table
    - Upsert into `submission_scores` table (ON CONFLICT DO UPDATE)
-5. Update Redis leaderboard:
-   - `ZADD leaderboard <score * 1000> "{submission_id}:{team_name}"`
-   - `HSET leaderboard_details {submission_id} <JSON payload>`
-   - `PUBLISH leaderboard_updates <JSON payload>`
+5. Update Redis leaderboard via atomic Lua script:
+   ```lua
+   redis.call('ZADD', KEYS[1], ARGV[1], ARGV[2])         -- leaderboard, score*1000, submission_id
+   redis.call('HSET', KEYS[2], ARGV[2], ARGV[3])         -- leaderboard_details, submission_id, JSON
+   return redis.call('PUBLISH', KEYS[3], ARGV[3])         -- leaderboard_updates, JSON
+   ```
+   Keys: `leaderboard`, `leaderboard_details`, `leaderboard_updates`
+   Args: `score*1000`, `submission_id`, JSON payload
 6. Log ingestion summary
 
 ## Endpoints
@@ -63,7 +69,7 @@ None. This service has no HTTP server.
 | Env Var | Default | Description |
 |---------|---------|-------------|
 | `REDPANDA_BROKERS` | `redpanda.platform.svc.cluster.local:9092` | Comma-separated broker list |
-| `TIMESCALEDB_DSN` | `postgres://<user>:<password>@timescaledb.platform.svc.cluster.local:5432/obarena` | PostgreSQL connection string |
+| `TIMESCALEDB_DSN` | *(required, no default)* | PostgreSQL connection string |
 | `REDIS_ADDR` | `redis.platform.svc.cluster.local:6379` | Redis address |
 | `REDIS_PASSWORD` | *(empty)* | Redis password |
 | `MAX_LATENCY_US` | `50000.0` | Latency ceiling for scoring (microseconds) |
@@ -110,11 +116,11 @@ Clamped to [0, 1]. Derived from the two-phase correctness validation run by bot-
 
 | Key | Type | Purpose |
 |-----|------|---------|
-| `leaderboard` | Sorted Set | Rankings by composite score (score * 1000) |
-| `leaderboard_details` | Hash | Full JSON payload per submission_id |
+| `leaderboard` | Sorted Set | Rankings by composite score * 1000; member is `submission_id` |
+| `leaderboard_details` | Hash | Full JSON payload per `submission_id` |
 | `leaderboard_updates` | Pub/Sub channel | Live update fan-out to WebSocket clients |
 
-**Member format:** `"{submission_id}:{team_name}"`
+All three operations are wrapped in a single atomic Lua script to prevent partial failure.
 
 **Score scaling:** composite score multiplied by 1000 for integer precision in Redis sorted set.
 
@@ -125,13 +131,11 @@ Clamped to [0, 1]. Derived from the two-phase correctness validation run by bot-
 - If Redis write fails, log and continue
 - Event buffer capacity: 1000 events
 - Flush interval: 500ms
-- Final flush on shutdown (with 100ms wait for flushLoop to complete)
+- Final flush on shutdown via `doneCh` signal (flushLoop drains and closes)
 
 ## TODO
 
 - `log.Fatal` used directly in `main()` instead of `run()` helper pattern
 - `log.Printf` used instead of `slog` structured logging
-- `TIMESCALEDB_DSN` default contains plaintext password `obarena` — should use placeholder format and rely on Helm-managed secrets
 - No graceful shutdown — `context.Background()` used for consumer run, no signal handling
-- Redis ZADD member format `"{submission_id}:{team_name}"` causes collisions on team rename (BUG.md #108)
 - Consumer group offset is not explicitly committed — relies on franz-go auto-commit

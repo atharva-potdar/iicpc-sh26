@@ -10,7 +10,9 @@ Second service in the pipeline. Consumes from `submission.lifecycle` (after subm
 
 ## Event Contract
 
-**Reads from:** `submission.lifecycle` (consumer group: `build-service`)
+**Consumer group:** `build-service`
+
+**Reads from:** `submission.lifecycle`
 **Writes to:** `submission.lifecycle`
 
 ### Consumed: submission.created
@@ -73,7 +75,11 @@ None. This service has no HTTP server.
 |---------|---------|-------------|
 | `SEAWEEDFS_ENDPOINT` | `http://seaweedfs.platform.svc.cluster.local:8333` | SeaweedFS S3 endpoint |
 | `REDPANDA_BROKERS` | `redpanda.platform.svc.cluster.local:9092` | Comma-separated broker list |
-| `BUILD_TIMEOUT_SECONDS` | `120` | Max time to wait for build completion |
+| `DOWNLOAD_TIMEOUT_SECONDS` | `30` | Max time to download source archive |
+| `POD_START_TIMEOUT_SECONDS` | `60` | Max time to wait for build pod to reach Running |
+| `INJECT_TIMEOUT_SECONDS` | `30` | Max time to inject source into pod |
+| `BUILD_TIMEOUT_SECONDS` | `120` | Max time for the build command to complete |
+| `UPLOAD_TIMEOUT_SECONDS` | `30` | Max time to upload binary to SeaweedFS |
 | `MAX_LOG_BYTES` | `4096` | Max compiler output captured on failure |
 
 ## Dependencies
@@ -101,7 +107,7 @@ All binaries are statically linked for portability.
 |----------|-------|
 | Namespace | `builds` |
 | Image | Language-specific (see table above) |
-| Entrypoint | `sh -c "trap 'exit 0' TERM; sleep infinity & wait $!"` |
+| Entrypoint | `sh -c "sleep infinity & wait $!"` |
 | Working directory | `/workspace` |
 | Volume | EmptyDir at `/workspace`, sizeLimit 512Mi |
 | CPU request | 1 |
@@ -135,11 +141,10 @@ Bound to `build-pod-manager` Role in `builds` namespace:
 | CPU limit | 1000m |
 | Memory request | 512Mi |
 | Memory limit | 1024Mi |
-| HPA | 1–8 replicas, 60% CPU target |
+| HPA | 1–4 replicas, 60% CPU target |
 
 ## TODO
 
-- `log.Fatal` used directly in `main()` instead of `run()` helper pattern (BUG.md reference)
+- `log.Fatal` used directly in `main()` instead of `run()` helper pattern
 - `log.Printf` used instead of `slog` structured logging
 - Kafka topic `submission.lifecycle` hardcoded as string literal in `publisher.go`
-- `ProduceSync` called without `context.WithTimeout` — risk of hung goroutine if broker is down

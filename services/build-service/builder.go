@@ -155,7 +155,7 @@ func (b *Builder) Build(ctx context.Context, event SubmissionCreatedEvent) (*Bui
 	defer b.cleanupPod(cleanupCtx, podName)
 
 	// Wait for pod to be running
-	if err := b.waitForPodRunning(podCtx, pod.Name); err != nil {
+	if err := b.waitForPodRunning(podCtx, pod.Name, pod.ResourceVersion); err != nil {
 		return nil, fmt.Errorf("wait for pod: %w", err)
 	}
 	slog.Info("build pod running", "pod", podName)
@@ -228,8 +228,24 @@ func (b *Builder) createBuildPod(ctx context.Context, name, image string) (*core
 					Image:      image,
 					Command:    []string{"sh", "-c", "sleep infinity & wait $!"},
 					WorkingDir: "/workspace",
+					SecurityContext: &corev1.SecurityContext{
+						RunAsUser:                ptr[int64](65534),
+						RunAsNonRoot:             ptr(true),
+						ReadOnlyRootFilesystem:   ptr(true),
+						AllowPrivilegeEscalation: ptr(false),
+						Capabilities: &corev1.Capabilities{
+							Drop: []corev1.Capability{"ALL"},
+						},
+						SeccompProfile: &corev1.SeccompProfile{
+							Type: corev1.SeccompProfileTypeRuntimeDefault,
+						},
+						AppArmorProfile: &corev1.AppArmorProfile{
+							Type: corev1.AppArmorProfileTypeRuntimeDefault,
+						},
+					},
 					VolumeMounts: []corev1.VolumeMount{
 						{Name: "workspace", MountPath: "/workspace"},
+						{Name: "tmp", MountPath: "/tmp"},
 					},
 					Resources: corev1.ResourceRequirements{
 						Limits: corev1.ResourceList{
@@ -252,6 +268,12 @@ func (b *Builder) createBuildPod(ctx context.Context, name, image string) (*core
 						},
 					},
 				},
+				{
+					Name: "tmp",
+					VolumeSource: corev1.VolumeSource{
+						EmptyDir: &corev1.EmptyDirVolumeSource{},
+					},
+				},
 			},
 		},
 	}
@@ -263,9 +285,10 @@ func (b *Builder) createBuildPod(ctx context.Context, name, image string) (*core
 	return created, nil
 }
 
-func (b *Builder) waitForPodRunning(ctx context.Context, name string) error {
+func (b *Builder) waitForPodRunning(ctx context.Context, name, resourceVersion string) error {
 	watcher, err := b.k8sClient.CoreV1().Pods(buildNamespace).Watch(ctx, metav1.ListOptions{
-		FieldSelector: fmt.Sprintf("metadata.name=%s", name),
+		FieldSelector:   fmt.Sprintf("metadata.name=%s", name),
+		ResourceVersion: resourceVersion,
 	})
 	if err != nil {
 		return fmt.Errorf("watch pod: %w", err)
@@ -440,4 +463,8 @@ func (b *Builder) cleanupPod(ctx context.Context, name string) {
 
 func resourcePtr(q resource.Quantity) *resource.Quantity {
 	return &q
+}
+
+func ptr[T any](v T) *T {
+	return &v
 }

@@ -290,16 +290,13 @@ type leaderboardEntry struct {
 	Timestamp    string  `json:"timestamp"`
 }
 
-func (i *Ingester) updateLeaderboard(ctx context.Context, event BotMetricsEvent, score float64) error {
-	member := fmt.Sprintf("%s:%s", event.SubmissionID, event.TeamName)
-	err := i.redis.ZAdd(ctx, "leaderboard", redis.Z{
-		Score:  score * 1000,
-		Member: member,
-	}).Err()
-	if err != nil {
-		return err
-	}
+var updateLeaderboardScript = redis.NewScript(`
+	redis.call('ZADD', KEYS[1], ARGV[1], ARGV[2])
+	redis.call('HSET', KEYS[2], ARGV[2], ARGV[3])
+	return redis.call('PUBLISH', KEYS[3], ARGV[3])
+`)
 
+func (i *Ingester) updateLeaderboard(ctx context.Context, event BotMetricsEvent, score float64) error {
 	correctness := math.Max(0, math.Min(1, event.CorrectnessScore))
 
 	entry := leaderboardEntry{
@@ -322,13 +319,11 @@ func (i *Ingester) updateLeaderboard(ctx context.Context, event BotMetricsEvent,
 		return fmt.Errorf("marshal leaderboard entry: %w", err)
 	}
 
-	// Store in hash for HTTP initial-load; key is submission_id so we can HGET
-	// individual entries after a ZREVRANGE scan.
-	if err := i.redis.HSet(ctx, "leaderboard_details", event.SubmissionID, payload).Err(); err != nil {
-		return fmt.Errorf("hset leaderboard_details: %w", err)
-	}
-
-	return i.redis.Publish(ctx, "leaderboard_updates", payload).Err()
+	// score*1000 avoids Redis float collation issues in sorted sets
+	return updateLeaderboardScript.Run(ctx, i.redis,
+		[]string{"leaderboard", "leaderboard_details", "leaderboard_updates"},
+		score*1000, event.SubmissionID, payload,
+	).Err()
 }
 
 func (i *Ingester) Close() {

@@ -34,7 +34,9 @@
 
 ### Pre-Signed S3 Uploads
 
-**What:** Refactor `submission-api` `POST /submissions` to return a pre-signed SeaweedFS S3 upload URL instead of accepting the file through the Go backend. Clients upload `.tar.gz` files directly to SeaweedFS, then call a lightweight confirmation endpoint with the artifact key.
+**What:** Refactor `submission-api` `POST /submissions`
+
+**Why deferred over direct fix:** Pre-signed URLs eliminate the need for any static AWS credentials in artifact access — the InitContainer downloads directly via a time-limited URL rather than signing with SDK credentials. This is the proper fix path instead of patching the credential chain locally. to return a pre-signed SeaweedFS S3 upload URL instead of accepting the file through the Go backend. Clients upload `.tar.gz` files directly to SeaweedFS, then call a lightweight confirmation endpoint with the artifact key.
 
 **Why:** The current flow routes the entire file through the Go process, which must hold the upload in memory (or spill to disk) before forwarding to SeaweedFS. Under concurrent load, this causes OOMKills and disk I/O bottlenecks. Direct-to-S3 uploads eliminate the Go backend from the data path entirely, reducing memory footprint to a constant regardless of file size and removing the upload as a scaling bottleneck. Pre-signed URLs also let you enforce upload size limits at the SeaweedFS layer (via bucket policy or presigned URL expiration constraints) rather than in the Go process, which is more reliable and harder to bypass.
 
@@ -78,6 +80,8 @@
 ### Rate Limiting & Team Authentication
 
 **What:** Implement team identity verification (API keys, OAuth, or mutual TLS) and add per-team token-bucket rate limiting to `submission-api`. Key the bucket by verified team identity, not client IP.
+
+**Status:** Deferred — team authentication is a prerequisite for meaningful rate limiting.
 
 **Why:** Rate limiting without authentication would be keyed by client IP, which is useless behind NAT or a shared cluster node. This must be implemented before the platform is publicly accessible — without it, any team can flood the submission queue, starving other teams and filling disk with max-size uploads. Without authentication, there is no way to attribute submissions to teams or prevent impersonation.
 

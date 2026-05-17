@@ -13,6 +13,8 @@ Third service in the pipeline. Consumes from `submission.lifecycle` (after build
 **Reads from:** `submission.lifecycle` (consumer group: `sandbox-orchestrator`)
 **Writes to:** `submission.lifecycle`
 
+**Consumer group:** `sandbox-orchestrator`
+
 ### Consumed: build.complete
 
 | Field | Type | Description |
@@ -165,12 +167,11 @@ Bound to `runtimeclass-reader` ClusterRole (cluster-wide):
 | CPU limit | 500m |
 | Memory request | 128Mi |
 | Memory limit | 256Mi |
-| HPA | 1–6 replicas, 60% CPU target |
+| HPA | 1–4 replicas, 60% CPU target |
 
 ## TODO
 
 - `log.Fatal` used directly in `main()` instead of `run()` helper pattern
 - `log.Printf` used instead of `slog` structured logging
 - Kafka topic `submission.lifecycle` hardcoded as string literal in `publisher.go`
-- `ProduceSync` called without `context.WithTimeout` — risk of hung goroutine if broker is down
-- S3 credentials use static `credentials.NewStaticCredentialsProvider("any", "any", "")` — should migrate to Helm-managed secrets
+- S3 credentials use static `credentials.NewStaticCredentialsProvider("any", "any", "")` — should migrate to Helm-managed secrets or pre-signed URLs

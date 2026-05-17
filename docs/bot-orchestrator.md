@@ -10,7 +10,9 @@ Fourth service in the pipeline. Consumes from `submission.lifecycle` (after sand
 
 ## Event Contract
 
-**Reads from:** `submission.lifecycle` (consumer group: `bot-orchestrator`)
+**Consumer group:** `bot-orchestrator`
+
+**Reads from:** `submission.lifecycle`
 **Writes to:** `submission.lifecycle`
 
 ### Consumed: sandbox.ready
@@ -40,16 +42,17 @@ Fourth service in the pipeline. Consumes from `submission.lifecycle` (after sand
 ## Operational Flow
 
 1. Consume `sandbox.ready` event from Redpanda (consumer group: `bot-orchestrator`)
-2. Acquire running lock (mutex) — only one test at a time
-3. Create bot runner Job in `bots` namespace:
+2. Check `activeTests[submission_id]` — skip if already running (per-submission_id concurrency)
+3. Set `activeTests[submission_id] = true`
+4. Create bot runner Job in `bots` namespace:
    - Target endpoint: `ws://{pod_ip}:{ws_port}/stream`
    - Pass team name, submission ID, bot count, duration, Redpanda brokers as env vars
-4. Wait 15 seconds for sandbox warmup
-5. Watch Job until it succeeds or fails (timeout: `JOB_TIMEOUT_SECONDS`)
-6. Delete bot runner Job from `bots` namespace
-7. Delete sandbox pod from `sandboxes` namespace
-8. Publish `test.complete` event
-9. Release running lock
+5. Wait 15 seconds for sandbox warmup
+6. Watch Job until it succeeds or fails (timeout: `JOB_TIMEOUT_SECONDS`)
+7. Delete bot runner Job from `bots` namespace
+8. Delete sandbox pod from `sandboxes` namespace
+9. Publish `test.complete` event
+10. Delete `activeTests[submission_id]`
 
 ## Endpoints
 
@@ -156,5 +159,4 @@ Also deletes sandbox pods in `sandboxes` namespace (uses CoreV1().Pods() directl
 - `log.Fatal` used directly in `main()` instead of `run()` helper pattern
 - `log.Printf` used instead of `slog` structured logging
 - Kafka topic `submission.lifecycle` hardcoded as string literal in `publisher.go`
-- `ProduceSync` called without `context.WithTimeout` — risk of hung goroutine if broker is down
 - Bot orchestrator deletes sandbox pods in `sandboxes` namespace but has no RBAC binding for that namespace (only has `bot-job-manager` Role in `bots` namespace) — relies on default permissions or may fail in strict RBAC environments
