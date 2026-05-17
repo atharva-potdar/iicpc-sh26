@@ -69,7 +69,7 @@ smoke-test:
 
 dev-teardown:
     helm uninstall obarena-platform --namespace platform || true
-    kubectl delete namespace platform builds sandboxes bots || true
+    kubectl delete namespace platform builds sandboxes bots keda || true
 
 clean-cache:
     docker image prune -a -f
