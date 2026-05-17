@@ -3,7 +3,7 @@ set -euo pipefail
 
 K3S_ARGS="--write-kubeconfig-mode 644 \
   --kubelet-arg=cpu-manager-policy=static \
-  --kubelet-arg=reserved-cpus=10,11 \
+  --kubelet-arg=reserved-cpus=0,1 \
   --kubelet-arg=cpu-manager-policy-options=full-pcpus-only=true"
 
 echo "==> Installing / upgrading k3s with static CPU pinning..."
