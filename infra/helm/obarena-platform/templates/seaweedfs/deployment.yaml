@@ -47,6 +47,12 @@ spec:
             limits:
               memory: 256Mi
               cpu: "250m"
+          livenessProbe:
+            httpGet:
+              path: /cluster/status
+              port: 9333
+            initialDelaySeconds: 30
+            periodSeconds: 10
           readinessProbe:
             httpGet:
               path: /cluster/status
