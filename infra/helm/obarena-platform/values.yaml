@@ -87,8 +87,8 @@ resources:
 hpa:
   enabled: true
   submissionApi:       { minReplicas: 2, maxReplicas: 10, cpuTarget: 70 }
-  buildService:        { minReplicas: 1, maxReplicas: 8,  cpuTarget: 60 }
-  sandboxOrchestrator: { minReplicas: 1, maxReplicas: 6,  cpuTarget: 60 }
+  buildService:        { minReplicas: 1, maxReplicas: 4,  cpuTarget: 60 }
+  sandboxOrchestrator: { minReplicas: 1, maxReplicas: 4,  cpuTarget: 60 }
   telemetryIngester:   { minReplicas: 1, maxReplicas: 4,  cpuTarget: 70 }
   leaderboardWs:       { minReplicas: 2, maxReplicas: 6,  cpuTarget: 70 }
 
