@@ -1,14 +1,13 @@
 package main
 
 import (
-	"archive/tar"
-	"compress/gzip"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"regexp"
+	"sync"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -23,10 +22,28 @@ var teamNameRe = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
 const maxTeamNameLen = 64
 
+type pendingSubmit struct {
+	Language string
+	TeamName string
+}
+
+type SubmitInitRequest struct {
+	Language string `json:"language"`
+	TeamName string `json:"team_name"`
+}
+
+type SubmitInitResponse struct {
+	SubmissionID string `json:"submission_id"`
+	PresignedURL string `json:"presigned_url"`
+	ArtifactKey  string `json:"artifact_key"`
+	ExpiresAt    int64  `json:"expires_at"`
+}
+
 type Handler struct {
 	storage   *Storage
 	publisher *Publisher
 	maxBytes  int64
+	pending   sync.Map
 }
 
 func NewHandler(storage *Storage, publisher *Publisher, maxMB int64) *Handler {
@@ -45,113 +62,78 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	}
 }
 
-func validateTarGz(r io.Reader) error {
-	gr, err := gzip.NewReader(r)
-	if err != nil {
-		return fmt.Errorf("invalid gzip: %w", err)
-	}
-	defer func() {
-		if err := gr.Close(); err != nil {
-			slog.Debug("gzip reader close failed", "error", err)
-		}
-	}()
-	tr := tar.NewReader(gr)
-	for {
-		_, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return fmt.Errorf("invalid tar: %w", err)
-		}
-	}
-	return nil
-}
-
-func (h *Handler) handleSubmit(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) handleSubmitInit(w http.ResponseWriter, r *http.Request) {
 	log := loggerFor(r)
-
-	r.Body = http.MaxBytesReader(w, r.Body, h.maxBytes)
-	if err := r.ParseMultipartForm(2 << 20); err != nil {
-		if _, ok := err.(*http.MaxBytesError); ok {
-			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "file too large"})
-		} else {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
-		}
+	var req SubmitInitRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
 		return
 	}
 	defer func() {
-		if err := r.MultipartForm.RemoveAll(); err != nil {
-			log.Debug("multipart cleanup failed", "error", err)
+		if err := r.Body.Close(); err != nil {
+			log.Debug("body close failed", "error", err)
 		}
 	}()
-
-	language := r.FormValue("language")
-	if !allowedLanguages[language] {
+	if !allowedLanguages[req.Language] {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported language"})
 		return
 	}
-
-	teamName := r.FormValue("team_name")
-	if teamName == "" {
+	if req.TeamName == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "team_name required"})
 		return
 	}
-	if len(teamName) > maxTeamNameLen {
+	if len(req.TeamName) > maxTeamNameLen {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "team_name too long"})
 		return
 	}
-	if !teamNameRe.MatchString(teamName) {
+	if !teamNameRe.MatchString(req.TeamName) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "team_name contains invalid characters"})
 		return
 	}
-
-	file, _, err := r.FormFile("source")
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing source file"})
-		return
-	}
-	defer func() {
-		if err := file.Close(); err != nil {
-			log.Debug("file close failed", "error", err)
-		}
-	}()
-
-	if err := validateTarGz(file); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid archive"})
-		return
-	}
-
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		log.Error("seek upload", "error", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
-		return
-	}
-
 	submissionID := uuid.New().String()
-	artifactPath := fmt.Sprintf("submissions/%s.tar.gz", submissionID)
-
-	if err := h.storage.Upload(r.Context(), artifactPath, file); err != nil {
-		log.Error("upload to seaweedfs", "error", err)
+	artifactKey := fmt.Sprintf("submissions/%s.tar.gz", submissionID)
+	const lifetime = 15 * time.Minute
+	url, err := h.storage.PresignUpload(r.Context(), artifactKey, lifetime)
+	if err != nil {
+		log.Error("presign upload", "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return
 	}
+	h.pending.Store(submissionID, pendingSubmit{Language: req.Language, TeamName: req.TeamName})
+	writeJSON(w, http.StatusAccepted, SubmitInitResponse{
+		SubmissionID: submissionID,
+		PresignedURL: url,
+		ArtifactKey:  artifactKey,
+		ExpiresAt:    time.Now().Add(lifetime).Unix(),
+	})
+}
 
+func (h *Handler) handleConfirm(w http.ResponseWriter, r *http.Request) {
+	log := loggerFor(r)
+	submissionID := r.PathValue("id")
+	if submissionID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "submission_id required"})
+		return
+	}
+	v, ok := h.pending.Load(submissionID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "submission not found or expired"})
+		return
+	}
+	pending := v.(pendingSubmit)
+	artifactPath := fmt.Sprintf("submissions/%s.tar.gz", submissionID)
 	event := SubmissionCreatedEvent{
 		SubmissionID: submissionID,
-		Language:     language,
-		TeamName:     teamName,
+		Language:     pending.Language,
+		TeamName:     pending.TeamName,
 		ArtifactPath: artifactPath,
 	}
 	if err := h.publisher.PublishSubmissionCreated(r.Context(), event); err != nil {
 		log.Error("publish event", "error", err)
-		if delErr := h.storage.Delete(r.Context(), artifactPath); delErr != nil {
-			log.Error("failed to clean up orphaned object", "path", artifactPath, "error", delErr)
-		}
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return
 	}
-
-	log.Info("submission created", "id", submissionID, "lang", language, "team", teamName)
+	h.pending.Delete(submissionID)
+	log.Info("submission confirmed", "id", submissionID, "lang", pending.Language, "team", pending.TeamName)
 	writeJSON(w, http.StatusAccepted, map[string]string{"submission_id": submissionID})
 }

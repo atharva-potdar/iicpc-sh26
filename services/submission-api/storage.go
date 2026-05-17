@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -14,8 +15,9 @@ import (
 const defaultBucket = "submissions"
 
 type Storage struct {
-	client *s3.Client
-	bucket string
+	client        *s3.Client
+	presignClient *s3.PresignClient
+	bucket        string
 }
 
 func NewStorage(endpoint string, bucket string) (*Storage, error) {
@@ -34,13 +36,28 @@ func NewStorage(endpoint string, bucket string) (*Storage, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
 	}
-
 	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
 		o.BaseEndpoint = aws.String(endpoint)
 		o.UsePathStyle = true
 	})
+	return &Storage{
+		client:        client,
+		presignClient: s3.NewPresignClient(client),
+		bucket:        bucket,
+	}, nil
+}
 
-	return &Storage{client: client, bucket: bucket}, nil
+func (s *Storage) PresignUpload(ctx context.Context, key string, lifetime time.Duration) (string, error) {
+	req, err := s.presignClient.PresignPutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	}, func(opts *s3.PresignOptions) {
+		opts.Expires = lifetime
+	})
+	if err != nil {
+		return "", fmt.Errorf("presign put object %s: %w", key, err)
+	}
+	return req.URL, nil
 }
 
 func (s *Storage) Upload(ctx context.Context, key string, r io.Reader) error {

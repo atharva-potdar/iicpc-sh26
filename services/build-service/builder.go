@@ -228,6 +228,10 @@ func (b *Builder) createBuildPod(ctx context.Context, name, image string) (*core
 					Image:      image,
 					Command:    []string{"sh", "-c", "sleep infinity & wait $!"},
 					WorkingDir: "/workspace",
+					Env: []corev1.EnvVar{
+						{Name: "GOCACHE", Value: "/tmp/go-build-cache"},
+						{Name: "GOPATH", Value: "/tmp/go-path"},
+					},
 					SecurityContext: &corev1.SecurityContext{
 						RunAsUser:                ptr[int64](65534),
 						RunAsNonRoot:             ptr(true),

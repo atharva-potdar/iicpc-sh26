@@ -81,7 +81,8 @@ func run() error {
 			loggerFor(r).Error("healthz write error", "error", err)
 		}
 	})
-	mux.HandleFunc("POST /submissions", h.handleSubmit)
+	mux.HandleFunc("POST /submissions", h.handleSubmitInit)
+	mux.HandleFunc("POST /submissions/{id}/confirm", h.handleConfirm)
 
 	handler := requestIDMiddleware(mux)
 
