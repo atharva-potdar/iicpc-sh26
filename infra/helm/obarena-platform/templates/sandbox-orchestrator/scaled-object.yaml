@@ -1,0 +1,27 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: sandbox-orchestrator
+  namespace: platform
+  labels:
+    {{- include "obarena.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    name: sandbox-orchestrator
+    kind: Deployment
+    apiVersion: apps/v1
+  pollingInterval: {{ .Values.kedaScaling.pollingInterval }}
+  cooldownPeriod: {{ .Values.kedaScaling.cooldownPeriod }}
+  minReplicaCount: {{ .Values.kedaScaling.sandboxOrchestrator.minReplicas }}
+  maxReplicaCount: {{ .Values.kedaScaling.sandboxOrchestrator.maxReplicas }}
+  advanced:
+    restoreToOriginalReplicaCount: true
+  triggers:
+    - type: apache-kafka
+      metadata:
+        bootstrapServers: redpanda.platform.svc.cluster.local:9092
+        consumerGroup: {{ .Values.kedaScaling.sandboxOrchestrator.consumerGroup }}
+        topic: {{ .Values.kedaScaling.sandboxOrchestrator.topic }}
+        lagThreshold: {{ .Values.kedaScaling.sandboxOrchestrator.lagThreshold | quote }}
+        allowIdleConsumers: "false"
+        offsetResetPolicy: latest

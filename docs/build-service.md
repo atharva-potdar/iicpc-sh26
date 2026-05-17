@@ -141,7 +141,11 @@ Bound to `build-pod-manager` Role in `builds` namespace:
 | CPU limit | 1000m |
 | Memory request | 512Mi |
 | Memory limit | 1024Mi |
-| HPA | 1–4 replicas, 60% CPU target |
+| Autoscaling | KEDA Kafka (consumer group lag, max 4) |
+
+## Notes
+
+- Replaced CPU-based HPA with KEDA Kafka scaler on consumer group `build-service`
 
 ## TODO
 

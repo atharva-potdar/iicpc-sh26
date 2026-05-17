@@ -1,0 +1,17 @@
+{{- if .Values.kedaScaling.auth.enabled }}
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: kafka-trigger-auth
+  namespace: platform
+  labels:
+    {{- include "obarena.labels" . | nindent 4 }}
+spec:
+  secretTargetRef:
+    - parameter: username
+      name: {{ .Values.kedaScaling.auth.secretName }}
+      key: {{ .Values.kedaScaling.auth.usernameKey }}
+    - parameter: password
+      name: {{ .Values.kedaScaling.auth.secretName }}
+      key: {{ .Values.kedaScaling.auth.passwordKey }}
+{{- end }}

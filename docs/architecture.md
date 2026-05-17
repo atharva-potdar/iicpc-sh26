@@ -40,10 +40,10 @@ flowchart LR
 | Service | Namespace | Type | Replicas | Purpose |
 |---------|-----------|------|----------|---------|
 | submission-api | platform | Deployment | 2–10 (HPA) | Accept code submissions |
-| build-service | platform | Deployment | 1–8 (HPA) | Compile submitted code |
-| sandbox-orchestrator | platform | Deployment | 1–6 (HPA) | Deploy binaries as sandbox pods |
+| build-service | platform | Deployment | 1–4 (KEDA) | Compile submitted code |
+| sandbox-orchestrator | platform | Deployment | 1–4 (KEDA) | Deploy binaries as sandbox pods |
 | bot-orchestrator | platform | Deployment | 1 (singleton) | Run bot test fleet |
-| telemetry-ingester | platform | Deployment | 1–4 (HPA) | Score and store results |
+| telemetry-ingester | platform | Deployment | 1–8 (KEDA) | Score and store results |
 | leaderboard-ws | platform | Deployment | 2–6 (HPA) | Serve live leaderboard |
 | bot-runner | bots | Job | 1 per test | Execute correctness + load tests |
 | sandbox | sandboxes | Pod | 1 per submission | Run contestant binary |

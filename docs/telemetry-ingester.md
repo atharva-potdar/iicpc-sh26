@@ -60,6 +60,12 @@ Final processing stage. Consumes from `bot.metrics` (published by bot-runner Job
    Args: `score*1000`, `submission_id`, JSON payload
 6. Log ingestion summary
 
+## Helm Resources
+
+| Property | Value |
+|----------|-------|
+| Autoscaling | KEDA Kafka (consumer group lag, max 8, matches `bot.metrics` partitions) |
+
 ## Endpoints
 
 None. This service has no HTTP server.

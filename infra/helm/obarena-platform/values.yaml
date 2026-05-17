@@ -86,11 +86,32 @@ resources:
 
 hpa:
   enabled: true
-  submissionApi:       { minReplicas: 2, maxReplicas: 10, cpuTarget: 70 }
-  buildService:        { minReplicas: 1, maxReplicas: 4,  cpuTarget: 60 }
-  sandboxOrchestrator: { minReplicas: 1, maxReplicas: 4,  cpuTarget: 60 }
-  telemetryIngester:   { minReplicas: 1, maxReplicas: 4,  cpuTarget: 70 }
-  leaderboardWs:       { minReplicas: 2, maxReplicas: 6,  cpuTarget: 70 }
+  leaderboardWs: { minReplicas: 2, maxReplicas: 6, cpuTarget: 70 }
+  submissionApi: { minReplicas: 2, maxReplicas: 10, cpuTarget: 70 }
+
+kedaScaling:
+  pollingInterval: 30
+  cooldownPeriod: 120
+  auth:
+    enabled: false
+  buildService:
+    minReplicas: 1
+    maxReplicas: 4
+    lagThreshold: "10"
+    topic: submission.lifecycle
+    consumerGroup: build-service
+  sandboxOrchestrator:
+    minReplicas: 1
+    maxReplicas: 4
+    lagThreshold: "10"
+    topic: submission.lifecycle
+    consumerGroup: sandbox-orchestrator
+  telemetryIngester:
+    minReplicas: 1
+    maxReplicas: 8
+    lagThreshold: "10"
+    topic: bot.metrics
+    consumerGroup: telemetry-ingester
 
 ingress:
   enabled: true

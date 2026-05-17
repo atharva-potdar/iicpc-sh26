@@ -167,7 +167,11 @@ Bound to `runtimeclass-reader` ClusterRole (cluster-wide):
 | CPU limit | 500m |
 | Memory request | 128Mi |
 | Memory limit | 256Mi |
-| HPA | 1–4 replicas, 60% CPU target |
+| Autoscaling | KEDA Kafka (consumer group lag, max 4) |
+
+## Notes
+
+- Replaced CPU-based HPA with KEDA Kafka scaler on consumer group `sandbox-orchestrator`
 
 ## TODO
 
