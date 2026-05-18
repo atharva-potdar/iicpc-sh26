@@ -68,7 +68,14 @@ Final processing stage. Consumes from `bot.metrics` (published by bot-runner Job
 
 ## Endpoints
 
-None. This service has no HTTP server.
+### `GET /healthz`
+
+Serves HTTP health check status on port `8080`.
+
+**Response 200:**
+```json
+{ "status": "ok" }
+```
 
 ## Configuration
 
@@ -139,9 +146,3 @@ All three operations are wrapped in a single atomic Lua script to prevent partia
 - Flush interval: 500ms
 - Final flush on shutdown via `doneCh` signal (flushLoop drains and closes)
 
-## TODO
-
-- `log.Fatal` used directly in `main()` instead of `run()` helper pattern
-- `log.Printf` used instead of `slog` structured logging
-- No graceful shutdown — `context.Background()` used for consumer run, no signal handling
-- Consumer group offset is not explicitly committed — relies on franz-go auto-commit

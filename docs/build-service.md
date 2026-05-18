@@ -147,8 +147,3 @@ Bound to `build-pod-manager` Role in `builds` namespace:
 
 - Replaced CPU-based HPA with KEDA Kafka scaler on consumer group `build-service`
 
-## TODO
-
-- `log.Fatal` used directly in `main()` instead of `run()` helper pattern
-- `log.Printf` used instead of `slog` structured logging
-- Kafka topic `submission.lifecycle` hardcoded as string literal in `publisher.go`

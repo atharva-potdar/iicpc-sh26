@@ -153,8 +153,6 @@ The `Hub` manages WebSocket client connections using a channel-based fan-out pat
 
 ## Constraints
 
-- No graceful shutdown — uses bare `http.ListenAndServe` with no signal handling
-- `w.Write` return value not checked in `/healthz` handler
 - WebSocket connections are read-only from client perspective (no client messages processed)
 - Slow clients may miss live updates (non-blocking send with `default` case)
 
@@ -168,9 +166,3 @@ The `Hub` manages WebSocket client connections using a channel-based fan-out pat
 | Memory limit | 128Mi |
 | HPA | 2–6 replicas, 70% CPU target |
 
-## TODO
-
-- No graceful shutdown — `http.ListenAndServe` used without `signal.NotifyContext` or `srv.Shutdown()`
-- `log.Fatal` used directly in `main()` instead of `run()` helper pattern
-- `log.Printf` used instead of `slog` structured logging
-- `w.Write` return value not checked in `/healthz` handler

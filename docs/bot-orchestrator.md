@@ -142,7 +142,7 @@ Bound to `bot-job-manager` Role in `bots` namespace:
 - `pods`: get, list, watch
 - `pods/log`: get
 
-Also deletes sandbox pods in `sandboxes` namespace (uses CoreV1().Pods() directly, no RBAC binding exists for this cross-namespace delete — see TODO).
+Also deletes sandbox pods in the `sandboxes` namespace, authorized via the `bot-orchestrator-sandbox-cleanup` RoleBinding in the `sandboxes` namespace (which binds the `platform/bot-orchestrator` ServiceAccount to the `sandbox-pod-manager` Role).
 
 ## Helm Resources
 
@@ -154,9 +154,3 @@ Also deletes sandbox pods in `sandboxes` namespace (uses CoreV1().Pods() directl
 | Memory limit | 128Mi |
 | HPA | None (singleton) |
 
-## TODO
-
-- `log.Fatal` used directly in `main()` instead of `run()` helper pattern
-- `log.Printf` used instead of `slog` structured logging
-- Kafka topic `submission.lifecycle` hardcoded as string literal in `publisher.go`
-- Bot orchestrator deletes sandbox pods in `sandboxes` namespace but has no RBAC binding for that namespace (only has `bot-job-manager` Role in `bots` namespace) — relies on default permissions or may fail in strict RBAC environments

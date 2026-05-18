@@ -2,7 +2,10 @@
 
 ## Phase 1: Event-Driven Autoscaling & Compute Isolation
 
-### KEDA Kafka-Triggered Autoscaling
+### [COMPLETED] KEDA Kafka-Triggered Autoscaling
+
+> [!NOTE]
+> **Status:** Fully Implemented. Event-driven autoscaling has been successfully set up using KEDA `ScaledObjects` triggered by Redpanda consumer group lag, ensuring efficient scaling independent of CPU metrics.
 
 **What:** Replace CPU-based HPAs on `submission-api`, `build-service`, `sandbox-orchestrator`, and `telemetry-ingester` with KEDA `ScaledObjects` using Kafka topic lag triggers on `submission.lifecycle`.
 
@@ -32,11 +35,14 @@
 
 **Why:** The current NetworkPolicy-based egress rules operate at L3/L4 and cannot inspect application-layer protocols. An L7 policy prevents protocol smuggling (e.g., DNS tunneling over allowed ports) and ensures sandbox pods can only communicate with platform services using the intended protocols. This is a prerequisite for any production deployment handling untrusted contestant code.
 
-### Pre-Signed S3 Uploads
+### [COMPLETED] Pre-Signed S3 Uploads
 
-**What:** Refactor `submission-api` `POST /submissions`
+> [!NOTE]
+> **Status:** Fully Implemented. The `submission-api` utilizes a two-step S3 pre-signed upload initialization (`POST /submissions`) and confirmation (`POST /submissions/{id}/confirm`) mechanism, removing the Go process from the data path and scaling uploads seamlessly.
 
-**Why deferred over direct fix:** Pre-signed URLs eliminate the need for any static AWS credentials in artifact access — the InitContainer downloads directly via a time-limited URL rather than signing with SDK credentials. This is the proper fix path instead of patching the credential chain locally. to return a pre-signed SeaweedFS S3 upload URL instead of accepting the file through the Go backend. Clients upload `.tar.gz` files directly to SeaweedFS, then call a lightweight confirmation endpoint with the artifact key.
+**What:** Refactor `submission-api` `POST /submissions` to return a pre-signed SeaweedFS S3 upload URL instead of accepting the file through the Go backend. Clients upload `.tar.gz` files directly to SeaweedFS, then call a lightweight confirmation endpoint with the artifact key.
+
+**Why deferred over direct fix:** Pre-signed URLs eliminate the need for any static AWS credentials in artifact access — the InitContainer downloads directly via a time-limited URL rather than signing with SDK credentials. This is the proper fix path instead of patching the credential chain locally.
 
 **Why:** The current flow routes the entire file through the Go process, which must hold the upload in memory (or spill to disk) before forwarding to SeaweedFS. Under concurrent load, this causes OOMKills and disk I/O bottlenecks. Direct-to-S3 uploads eliminate the Go backend from the data path entirely, reducing memory footprint to a constant regardless of file size and removing the upload as a scaling bottleneck. Pre-signed URLs also let you enforce upload size limits at the SeaweedFS layer (via bucket policy or presigned URL expiration constraints) rather than in the Go process, which is more reliable and harder to bypass.
 

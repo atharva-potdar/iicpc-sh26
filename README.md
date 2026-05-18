@@ -43,7 +43,7 @@ Each arrow is a Redpanda event. Nothing talks to anything directly except throug
 
 ### submission-api
 
-Accepts code uploads via HTTP. Validates the input (language, file format, team name), stores the source artifact in SeaweedFS, and publishes a `submission.created` event to Redpanda. That's it — no build logic, no status tracking. It's a thin ingestion layer.
+A lightweight ingestion layer implementing a two-step pre-signed S3 upload flow. On `POST /submissions`, it validates the input metadata (language, team name) and returns a pre-signed SeaweedFS S3 upload URL. Once the client uploads the source archive directly to SeaweedFS, it confirms via `POST /submissions/{id}/confirm` which publishes a `submission.created` event to Redpanda. That's it — no direct file handling, no build logic, and no status tracking.
 
 ### build-service
 

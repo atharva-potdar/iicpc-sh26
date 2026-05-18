@@ -27,33 +27,58 @@ Key: `submission_id` (ensures ordered processing per submission).
 
 ## Operational Flow
 
-1. Receive `POST /submissions` multipart form
-2. Validate: language whitelist, team_name format/length, tar.gz integrity, max upload size
-3. Generate UUID submission_id
-4. Upload source tar.gz to SeaweedFS at `submissions/{submission_id}.tar.gz`
-5. Publish `submission.created` event to Redpanda (10s timeout)
-6. On publish failure: delete orphaned S3 object, return 500
-7. On success: return 202 with submission_id
+1. Receive `POST /submissions` (initialization request) containing metadata JSON.
+2. Validate: language whitelist, team_name format and length.
+3. Generate UUID `submission_id`.
+4. Generate a SeaweedFS S3 pre-signed upload URL at `submissions/{submission_id}.tar.gz` with a 15-minute expiration time.
+5. Save the initialization details in the server's pending map.
+6. Return `202 Accepted` to the client along with `submission_id`, `presigned_url`, `artifact_key`, and `expires_at`.
+7. The client uploads the `.tar.gz` source archive directly to the `presigned_url` (direct S3 PUT to SeaweedFS).
+8. Client calls `POST /submissions/{id}/confirm` to confirm completion.
+9. `submission-api` validates the session, publishes the `submission.created` event to Redpanda, and removes the entry from the pending map.
 
 ## Endpoints
 
-### `POST /submissions`
+### `POST /submissions` (Initialize Upload)
 
-Accepts `multipart/form-data` with fields:
+Accepts a JSON payload requesting a pre-signed S3 upload URL.
 
-| Field | Type | Required | Constraints |
-|-------|------|----------|-------------|
-| `source` | file | Yes | tar.gz archive, max `MAX_UPLOAD_SIZE_MB` MiB |
-| `language` | string | Yes | Must be `cpp`, `rust`, or `go` |
-| `team_name` | string | Yes | Max 64 chars, alphanumeric + `-` and `_` only |
+**Request Body:**
+```json
+{
+  "language": "cpp" | "rust" | "go",
+  "team_name": "string"
+}
+```
+
+* **Constraints:**
+  - `language`: Must be `cpp`, `rust`, or `go`
+  - `team_name`: Max 64 chars, alphanumeric + `-` and `_` only (`^[A-Za-z0-9_-]+$`)
+
+**Response 202:**
+```json
+{
+  "submission_id": "uuid",
+  "presigned_url": "http://...",
+  "artifact_key": "submissions/uuid.tar.gz",
+  "expires_at": 1785673892
+}
+```
+
+**Response 400:** `{ "error": "invalid JSON" | "unsupported language" | "team_name required" | "team_name too long" | "team_name contains invalid characters" }`
+**Response 500:** `{ "error": "internal error" }`
+
+### `POST /submissions/{id}/confirm` (Confirm Upload & Trigger Pipeline)
+
+Confirms that the source archive has been successfully uploaded to the pre-signed S3 URL and triggers the compilation pipeline.
 
 **Response 202:**
 ```json
 { "submission_id": "uuid" }
 ```
 
-**Response 413:** `{ "error": "file too large" }`
-**Response 400:** `{ "error": "unsupported language" | "team_name required" | "team_name too long" | "team_name contains invalid characters" | "missing source file" | "invalid archive" | "invalid request body" }`
+**Response 400:** `{ "error": "submission_id required" }`
+**Response 404:** `{ "error": "submission not found or expired" }`
 **Response 500:** `{ "error": "internal error" }`
 
 ### `GET /healthz`
@@ -92,6 +117,3 @@ Accepts `multipart/form-data` with fields:
 - No deduplication — each upload gets a new submission ID
 - On Kafka publish failure, orphaned S3 object is cleaned up
 
-## TODO
-
-- None. All known bugs in this service have been fixed.

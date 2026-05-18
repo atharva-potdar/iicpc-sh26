@@ -5,7 +5,7 @@ System-level overview of the OBARENA orderbook engine evaluation platform.
 ## Event Flow
 
 ```
-contestant → submission-api → [Redpanda: submission.lifecycle] → build-service
+contestant → submission-api (init) → SeaweedFS (S3 upload) → submission-api (confirm) → [Redpanda: submission.lifecycle] → build-service
 build-service → [Redpanda: submission.lifecycle] → sandbox-orchestrator
 sandbox-orchestrator → [Redpanda: submission.lifecycle] → bot-orchestrator
 bot-orchestrator → K8s Job → bot-runner → [Redpanda: bot.metrics] → telemetry-ingester
@@ -14,8 +14,11 @@ telemetry-ingester → Redis ZADD → leaderboard-ws → frontend (WebSocket)
 
 ```mermaid
 flowchart LR
-    A[Contestant] -->|POST /submissions| B[submission-api]
-    B -->|submission.created| C[(Redpanda\nsubmission.lifecycle)]
+    A[Contestant] -->|1. POST /submissions (init)| B[submission-api]
+    B -->|2. presigned_url| A
+    A -->|3. S3 PUT source| M[(SeaweedFS\nsubmissions bucket)]
+    A -->|4. POST /submissions/:id/confirm| B
+    B -->|5. submission.created| C[(Redpanda\nsubmission.lifecycle)]
     C -->|consume| D[build-service]
     D -->|build.complete| C
     C -->|consume| E[sandbox-orchestrator]
@@ -28,7 +31,6 @@ flowchart LR
     J -->|read + subscribe| K[leaderboard-ws]
     K -->|WebSocket| L[Browser Frontend]
 
-    B -->|S3 PUT| M[(SeaweedFS\nsubmissions bucket)]
     D -->|S3 GET| M
     D -->|S3 PUT| N[(SeaweedFS\nbuilds bucket)]
     E -->|S3 GET| N
@@ -123,12 +125,13 @@ Every sandbox pod (running contestant code) enforces:
 | `sandbox-orchestrator` | platform | `runtimeclass-reader` | cluster | runtimeclasses: get/list |
 | `build-service` | platform | `build-pod-manager` | `builds` | pods: create/get/list/watch/delete, pods/exec: create, pods/log: get |
 | `bot-orchestrator` | platform | `bot-job-manager` | `bots` | jobs: create/get/list/watch/delete, pods: get/list/watch, pods/log: get |
+| `bot-orchestrator` | platform | `sandbox-pod-manager` | `sandboxes` | pods: create/get/list/watch/delete, pods/log: get |
 
 ## Data Flow
 
 ```
 Source Code (tar.gz)
-  → submission-api uploads to SeaweedFS (submissions bucket)
+  → client requests pre-signed URL from submission-api and uploads directly to SeaweedFS (submissions bucket)
   → build-service downloads from SeaweedFS
   → build-service compiles in isolated pod
   → build-service uploads binary to SeaweedFS (builds bucket)

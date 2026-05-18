@@ -175,7 +175,4 @@ Bound to `runtimeclass-reader` ClusterRole (cluster-wide):
 
 ## TODO
 
-- `log.Fatal` used directly in `main()` instead of `run()` helper pattern
-- `log.Printf` used instead of `slog` structured logging
-- Kafka topic `submission.lifecycle` hardcoded as string literal in `publisher.go`
-- S3 credentials use static `credentials.NewStaticCredentialsProvider("any", "any", "")` — should migrate to Helm-managed secrets or pre-signed URLs
+- S3 credentials use static `credentials.NewStaticCredentialsProvider("any", "any", "")` — should migrate to Helm-managed secrets or pre-signed URLs. (All other refactoring tasks including structured logging `slog`, `run()` helper, and parameterizing Kafka topics have been completed.)
