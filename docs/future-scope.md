@@ -21,13 +21,16 @@
 
 ## Phase 2: eBPF Networking, L7 Security & Upload Architecture
 
-### Cilium CNI Replacement
+### [COMPLETED] Cilium CNI Replacement
+
+> [!NOTE]
+> **Status:** Fully Implemented. Cilium replaces the default CNI with eBPF pod-to-pod networking, kube-proxy replacement, and L7 policy enforcement.
 
 **What:** Replace the default CNI (kube-proxy/iptables) with Cilium, leveraging eBPF for pod-to-pod networking and service load balancing.
 
 **Why:** The primary driver is L7 policy enforcement and observability, not raw packet forwarding performance. At ~50 bots the iptables rule count is in the hundreds, not tens of thousands — the O(1) vs linear lookup difference is measurable but not decisive. Cilium's real advantage is the ability to enforce application-layer egress policies (preventing protocol smuggling over allowed ports) and the built-in network visibility via `cilium monitor` and Hubble. The eBPF datapath is a bonus; the L7 security and observability are the justification.
 
-**Caveat:** Cilium in replacement mode on EKS requires disabling the AWS VPC CNI, which affects pod IP allocation. This is an installation consideration, not a blocker.
+**Implementation:** Deployed via Ansible playbook (`site.yml`) on both bare metal and cloud. Uses VXLAN tunnel mode for portability, kube-proxy replacement, and Hubble for observability.
 
 ### L7 Default-Deny Egress for Sandboxes
 

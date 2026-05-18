@@ -2,7 +2,7 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Commands
-- **Local Dev Deploy**: `just` (rebuilds, loads into k3s, deploys via Helm, runs smoke test)
+- **Local Dev Deploy**: `just` (rebuilds, loads into k0s, deploys via Helm, runs smoke test)
 - **Tear Down**: `just dev-teardown`
 - **Clean Cache**: `just clean-cache`
 - **Lint Helm Charts**: `just helm-lint`

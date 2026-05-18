@@ -7,11 +7,11 @@ A distributed system for evaluating orderbook engine implementations. Contestant
 ### Prerequisites
 
 - Docker with BuildKit
-- k3s (local Kubernetes)
+- k0s (local Kubernetes)
 - Helm
 - Just (task runner)
 
-Run `./scripts/setup-host.sh` to install k3s, Helm, and Just. Then run `just` to build all images, load them into k3s, deploy via Helm, and run a smoke test.
+Run the Ansible playbook in `site.yml` to install k0s, Cilium, and Helm. Then run `just` to build all images, load them into k0s, deploy via Helm, and run a smoke test.
 
 That's the entire workflow: `just` brings up the platform from scratch.
 
@@ -23,7 +23,7 @@ The naive approach would be a monolith that does everything sequentially. That w
 
 So the system decomposes naturally into a pipeline of microservices, each responsible for one stage, communicating through an event bus. Go was the obvious choice — fast compilation, small binaries, and a standard library that handles HTTP, JSON, and concurrency without pulling in a framework.
 
-Kubernetes handles the orchestration. k3s makes it painless to run locally — it's a single binary, no VM required. The same Helm chart that deploys to k3s deploys to EKS in production with only a values file change.
+Kubernetes handles the orchestration. k0s makes it painless to run locally — it's a single binary with no VM required, and Cilium provides eBPF networking with kube-proxy replacement. The same Helm chart that deploys to k0s deploys to EKS in production with only a values file change.
 
 ### On Sandboxing
 

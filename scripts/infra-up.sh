@@ -1,6 +1,5 @@
 #!/bin/bash
 set -euo pipefail
-export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 
 echo "==> Ensuring KEDA is installed"
 if ! helm get metadata keda -n keda &>/dev/null 2>&1; then

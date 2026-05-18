@@ -1,8 +1,6 @@
 #!/bin/bash
 set -euo pipefail
 
-export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-
 PASS=0
 FAIL=0
 
