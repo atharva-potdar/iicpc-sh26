@@ -25,6 +25,7 @@ sandboxOrchestrator:
 
 storage:
   createStorageClasses: true
+  replicaCount: 1 # Set single-node dev replicas to 1 to bypass scheduling warnings
   seaweedfsStorageClass: obarena-longhorn-ephemeral
   timescaledbStorageClass: obarena-longhorn-db
 

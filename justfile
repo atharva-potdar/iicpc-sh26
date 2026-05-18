@@ -61,6 +61,22 @@ prefetch:
     sudo k0s ctr -n k8s.io images pull docker.io/library/rust:1.95-alpine
     sudo k0s ctr -n k8s.io images pull docker.io/library/golang:1.26-alpine
     sudo k0s ctr -n k8s.io images pull docker.io/library/alpine:3.23
+    # Longhorn Core
+    sudo k0s ctr -n k8s.io images pull docker.io/longhornio/longhorn-manager:v1.11.2
+    sudo k0s ctr -n k8s.io images pull docker.io/longhornio/longhorn-engine:v1.11.2
+    sudo k0s ctr -n k8s.io images pull docker.io/longhornio/longhorn-instance-manager:v1.11.2
+    sudo k0s ctr -n k8s.io images pull docker.io/longhornio/longhorn-share-manager:v1.11.2
+    sudo k0s ctr -n k8s.io images pull docker.io/longhornio/longhorn-ui:v1.11.2
+    # Longhorn CSI Helpers
+    sudo k0s ctr -n k8s.io images pull docker.io/longhornio/csi-provisioner:v5.3.0-20260428
+    sudo k0s ctr -n k8s.io images pull docker.io/longhornio/csi-attacher:v4.11.0-20260428
+    sudo k0s ctr -n k8s.io images pull docker.io/longhornio/csi-resizer:v2.1.0-20260428
+    sudo k0s ctr -n k8s.io images pull docker.io/longhornio/csi-snapshotter:v8.5.0-20260428
+    sudo k0s ctr -n k8s.io images pull docker.io/longhornio/csi-node-driver-registrar:v2.16.0-20260428
+    sudo k0s ctr -n k8s.io images pull docker.io/longhornio/livenessprobe:v2.18.0-20260428
+    # Cilium CNI (v1.19.4)
+    sudo k0s ctr -n k8s.io images pull quay.io/cilium/cilium:v1.19.4
+    sudo k0s ctr -n k8s.io images pull quay.io/cilium/operator-generic:v1.19.4
 
 infra-up:
     bash scripts/infra-up.sh
@@ -70,6 +86,7 @@ smoke-test:
 
 dev-teardown:
     helm uninstall obarena-platform --namespace platform || true
+    helm uninstall keda --namespace keda || true
     k0s kubectl delete namespace platform builds sandboxes bots keda || true
 
 clean-cache:

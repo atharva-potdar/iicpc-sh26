@@ -7,11 +7,10 @@ A distributed system for evaluating orderbook engine implementations. Contestant
 ### Prerequisites
 
 - Docker with BuildKit
-- k0s (local Kubernetes)
-- Helm
-- Just (task runner)
+- just
+- Ansible
 
-Run the Ansible playbook in `site.yml` to install k0s, Cilium, and Helm. Then run `just` to build all images, load them into k0s, deploy via Helm, and run a smoke test.
+Run the Ansible playbook in `site.yml` to install k0s, Cilium, Helm, and Longhorn for persistent storage (with all node-level prerequisites managed automatically). Then run `just` to build all images, load them into k0s, deploy via Helm, and run a smoke test.
 
 That's the entire workflow: `just` brings up the platform from scratch.
 

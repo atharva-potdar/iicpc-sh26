@@ -128,6 +128,11 @@ storage:
   # the PVCs at the provider-native StorageClass instead.
   createStorageClasses: false
 
+  # Longhorn Replica Count for the created StorageClasses (only active if createStorageClasses: true).
+  # Set to "1" for single-node developer clusters to avoid scheduling overhead and disk warnings.
+  # Set to "2" or "3" in multi-node staging/production clusters for high availability and durability.
+  replicaCount: 1
+
   # Explicit per-workload storage classes.
   seaweedfsStorageClass: ""
   timescaledbStorageClass: ""

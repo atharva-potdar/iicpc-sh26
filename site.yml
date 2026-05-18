@@ -195,7 +195,7 @@
       environment:
         KUBECONFIG: /root/.kube/config
       register: cilium_status
-      ignore_errors: true
+      failed_when: false
       changed_when: false
 
     - name: Install Cilium
@@ -221,7 +221,7 @@
 
     - name: Wait for Cilium daemonset to be ready
       ansible.builtin.command: >
-        kubectl rollout status daemonset/cilium
+        k0s kubectl rollout status daemonset/cilium
         -n {{ cilium_namespace }}
         --timeout=300s
       environment:
@@ -230,7 +230,7 @@
 
     - name: Wait for node to become Ready
       ansible.builtin.command: >
-        kubectl wait node --all
+        k0s kubectl wait node --all
         --for=condition=Ready
         --timeout=300s
       environment:
@@ -239,7 +239,7 @@
 
     - name: Check Cilium status
       ansible.builtin.command: >
-        kubectl -n {{ cilium_namespace }}
+        k0s kubectl -n {{ cilium_namespace }}
         exec ds/cilium -- cilium status
       environment:
         KUBECONFIG: /root/.kube/config
@@ -249,3 +249,139 @@
     - name: Show Cilium status
       ansible.builtin.debug:
         msg: "{{ cilium_final_status.stdout_lines }}"
+
+    # ─── Longhorn Prerequisites ──────────────────────────────────────────────
+
+    - name: Map iSCSI and NFS packages per OS family
+      ansible.builtin.set_fact:
+        iscsi_package: >-
+          {{
+            'open-iscsi' if ansible_os_family == 'Archlinux' or ansible_os_family == 'Debian'
+            else 'iscsi-initiator-utils' if ansible_os_family == 'RedHat'
+            else ''
+          }}
+        nfs_package: >-
+          {{
+            'nfs-utils' if ansible_os_family == 'Archlinux' or ansible_os_family == 'RedHat'
+            else 'nfs-common' if ansible_os_family == 'Debian'
+            else ''
+          }}
+        iscsi_service: 'iscsid'
+
+    - name: Fail if OS family is unsupported for Longhorn prerequisites
+      ansible.builtin.fail:
+        msg: "Unsupported OS family: {{ ansible_os_family }}. Cannot install Longhorn prerequisites."
+      when: iscsi_package == '' or nfs_package == ''
+
+    - name: Install iSCSI and NFS packages
+      ansible.builtin.package:
+        name:
+          - "{{ iscsi_package }}"
+          - "{{ nfs_package }}"
+        state: present
+
+    - name: Start and enable iSCSI service
+      ansible.builtin.systemd:
+        name: "{{ iscsi_service }}"
+        state: started
+        enabled: true
+
+    # ─── Longhorn Helm Install ────────────────────────────────────────────────
+
+    - name: Add Longhorn Helm repository
+      ansible.builtin.command: helm repo add longhorn https://charts.longhorn.io
+      environment:
+        KUBECONFIG: /root/.kube/config
+      register: longhorn_repo_add
+      changed_when: "'already exists' not in longhorn_repo_add.stdout"
+
+    - name: Update Helm repositories for Longhorn
+      ansible.builtin.command: helm repo update
+      environment:
+        KUBECONFIG: /root/.kube/config
+      changed_when: false
+
+    - name: Create Longhorn namespace
+      ansible.builtin.shell: >
+        k0s kubectl create namespace {{ longhorn_namespace }}
+        --dry-run=client -o yaml
+        | k0s kubectl apply -f -
+      environment:
+        KUBECONFIG: /root/.kube/config
+      changed_when: false
+
+    - name: Check if Longhorn is already installed
+      ansible.builtin.command: helm status longhorn -n {{ longhorn_namespace }}
+      environment:
+        KUBECONFIG: /root/.kube/config
+      register: longhorn_status
+      failed_when: false
+      changed_when: false
+
+    - name: Install Longhorn via Helm
+      ansible.builtin.command: >
+        helm upgrade --install longhorn longhorn/longhorn
+        --version {{ longhorn_version }}
+        --namespace {{ longhorn_namespace }}
+        --set defaultSettings.defaultDataPath={{ longhorn_data_path }}
+        --set defaultSettings.defaultReplicaCount={{ longhorn_replica_count }}
+        --set defaultSettings.createDefaultDiskLabeledNodes=true
+        --set csi.attacherReplicaCount={{ longhorn_replica_count }}
+        --set csi.provisionerReplicaCount={{ longhorn_replica_count }}
+        --set csi.resizerReplicaCount={{ longhorn_replica_count }}
+        --set csi.snapshotterReplicaCount={{ longhorn_replica_count }}
+        --set persistence.defaultClass=false
+        --set persistence.createStorageClass=false
+      environment:
+        KUBECONFIG: /root/.kube/config
+      when: longhorn_status.rc != 0
+      changed_when: true
+
+    - name: Label Kubernetes nodes for Longhorn default disk
+      ansible.builtin.shell: >
+        for node in $(k0s kubectl get nodes -o jsonpath='{.items[*].metadata.name}'); do
+          k0s kubectl label node "$node" node.longhorn.io/create-default-disk=true --overwrite;
+        done
+      environment:
+        KUBECONFIG: /root/.kube/config
+      changed_when: false
+
+    # ─── Longhorn Verification ────────────────────────────────────────────────
+
+    - name: Wait for Longhorn manager daemonset to be ready
+      ansible.builtin.command: >
+        k0s kubectl rollout status daemonset/longhorn-manager
+        -n {{ longhorn_namespace }}
+        --timeout=300s
+      environment:
+        KUBECONFIG: /root/.kube/config
+      changed_when: false
+
+    - name: Wait for Longhorn driver deployer deployment to be ready
+      ansible.builtin.command: >
+        k0s kubectl rollout status deployment/longhorn-driver-deployer
+        -n {{ longhorn_namespace }}
+        --timeout=300s
+      environment:
+        KUBECONFIG: /root/.kube/config
+      changed_when: false
+
+    - name: Wait for Longhorn CSI plugin daemonset resource to exist
+      ansible.builtin.shell: >
+        k0s kubectl get daemonset/longhorn-csi-plugin -n {{ longhorn_namespace }}
+      environment:
+        KUBECONFIG: /root/.kube/config
+      register: csi_ds_check
+      until: csi_ds_check.rc == 0
+      retries: 30
+      delay: 5
+      changed_when: false
+
+    - name: Wait for Longhorn CSI plugin daemonset to be ready
+      ansible.builtin.command: >
+        k0s kubectl rollout status daemonset/longhorn-csi-plugin
+        -n {{ longhorn_namespace }}
+        --timeout=300s
+      environment:
+        KUBECONFIG: /root/.kube/config
+      changed_when: false

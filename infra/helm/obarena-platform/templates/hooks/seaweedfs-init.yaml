@@ -13,6 +13,9 @@ spec:
   template:
     metadata:
       name: seaweedfs-init
+      labels:
+        {{- include "obarena.labels" . | nindent 8 }}
+        app.kubernetes.io/name: seaweedfs-init
     spec:
       restartPolicy: Never
       {{- include "obarena.platformScheduling" . | nindent 6 }}

@@ -1,8 +1,8 @@
-# k0s + Cilium Ansible Playbook
+# k0s + Cilium + Longhorn Ansible Playbook
 
-Installs k0s (single-node, expandable to multi-node) with Cilium CNI and
-kube-proxy replacement. Tested on Arch Linux (bare metal) and designed to
-work on AWS (Ubuntu 22.04+, AL2023).
+Installs k0s (single-node, expandable to multi-node) with Cilium CNI,
+kube-proxy replacement, and Longhorn for persistent storage. Tested on Arch
+Linux (bare metal) and designed to work on AWS (Ubuntu 22.04+, AL2023).
 
 ## Structure
 
@@ -40,6 +40,8 @@ Key values to confirm:
 - `service_cidr` — must not overlap with your VPC CIDR
 - `cilium_version` — pin this for reproducibility
 - `helm_version` — pin this for reproducibility
+- `longhorn_version` — pin this for reproducibility
+- `longhorn_replica_count` — replica count for Longhorn (default: 1 for local dev)
 
 ## Running
 
@@ -59,4 +61,6 @@ ansible-playbook -i inventory.ini site.yml
   `10.0.0.0/16` and typical home/lab `192.168.x.x` ranges.
 - Cilium uses VXLAN tunnel mode for cloud agnosticism — works on bare metal
   and AWS without VPC route table changes or ENI mode.
+- Longhorn is installed automatically to provide persistent storage. Node-level prerequisites (iSCSI userspace tools and NFS client libraries) are automatically detected and installed by the playbook (distro-agnostic, supporting Arch Linux, Debian, and RedHat families), keeping the storage bootstrap completely idempotent and hands-off.
+- *Production Note:* In future multi-node production setups, Longhorn should be restricted to platform/storage-capable nodes to avoid contaminating sandbox latency with storage IO.
 - The playbook is idempotent — safe to re-run.

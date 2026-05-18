@@ -13,6 +13,9 @@ spec:
   template:
     metadata:
       name: timescaledb-schema
+      labels:
+        {{- include "obarena.labels" . | nindent 8 }}
+        app.kubernetes.io/name: timescaledb-schema
     spec:
       restartPolicy: Never
       {{- include "obarena.platformScheduling" . | nindent 6 }}

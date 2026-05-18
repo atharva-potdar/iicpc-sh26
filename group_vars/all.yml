@@ -14,3 +14,9 @@ cilium_namespace: "kube-system"
 # ─── Helm ─────────────────────────────────────────────────────────────────────
 helm_version: "v4.1.4"
 helm_install_dir: "/usr/local/bin"
+
+# ─── Longhorn ─────────────────────────────────────────────────────────────────
+longhorn_version: "1.11.2"
+longhorn_namespace: "longhorn-system"
+longhorn_replica_count: 1
+longhorn_data_path: "/var/lib/longhorn"

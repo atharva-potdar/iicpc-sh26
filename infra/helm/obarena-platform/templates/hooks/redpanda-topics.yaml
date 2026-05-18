@@ -13,6 +13,9 @@ spec:
   template:
     metadata:
       name: redpanda-topics
+      labels:
+        {{- include "obarena.labels" . | nindent 8 }}
+        app.kubernetes.io/name: redpanda-topics
     spec:
       restartPolicy: Never
       {{- include "obarena.platformScheduling" . | nindent 6 }}

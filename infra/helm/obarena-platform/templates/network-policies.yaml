@@ -12,8 +12,10 @@ metadata:
     {{- include "obarena.labels" . | nindent 4 }}
 spec:
   endpointSelector: {}
-  ingress: []
-  egress: []
+  ingress:
+    - {}
+  egress:
+    - {}
 ---
 # submission-api: inbound from internet + kubelet probes, outbound to Redpanda + SeaweedFS + DNS
 apiVersion: cilium.io/v2
@@ -225,6 +227,43 @@ spec:
             - port: "6443"
               protocol: TCP
 ---
+# redpanda-topics: egress to Redpanda + DNS
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: redpanda-topics
+  namespace: platform
+  labels:
+    {{- include "obarena.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: redpanda-topics
+  ingress: []
+  egress:
+    # DNS
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    # Redpanda
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: platform
+            app.kubernetes.io/name: redpanda
+      toPorts:
+        - ports:
+            - port: "9092"
+              protocol: TCP
+            - port: "9644"
+              protocol: TCP
+---
 # telemetry-ingester: inbound kubelet probes, outbound to Redpanda + TimescaleDB + Redis + DNS
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
@@ -357,6 +396,19 @@ spec:
         - ports:
             - port: "8333"
               protocol: TCP
+            - port: "9333"
+              protocol: TCP
+    # seaweedfs-init Job — bucket creation and status check
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: platform
+            app.kubernetes.io/name: seaweedfs-init
+      toPorts:
+        - ports:
+            - port: "8333"
+              protocol: TCP
+            - port: "9333"
+              protocol: TCP
     # submission-api — presigned URL generation
     - fromEndpoints:
         - matchLabels:
@@ -401,6 +453,43 @@ spec:
       toPorts:
         - ports:
             - port: "8333"
+              protocol: TCP
+---
+# seaweedfs-init: egress to SeaweedFS + DNS
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: seaweedfs-init-egress
+  namespace: platform
+  labels:
+    {{- include "obarena.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: seaweedfs-init
+  ingress: []
+  egress:
+    # DNS
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    # SeaweedFS
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: platform
+            app.kubernetes.io/name: seaweedfs
+      toPorts:
+        - ports:
+            - port: "8333"
+              protocol: TCP
+            - port: "9333"
               protocol: TCP
 ---
 # redis: ingress from telemetry-ingester, leaderboard-ws, and kubelet probes
@@ -469,6 +558,50 @@ spec:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: platform
             app.kubernetes.io/name: telemetry-ingester
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+    # timescaledb-schema Job — schema initialization
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: platform
+            app.kubernetes.io/name: timescaledb-schema
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+---
+# timescaledb-schema: egress to TimescaleDB + DNS
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: timescaledb-schema-egress
+  namespace: platform
+  labels:
+    {{- include "obarena.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: timescaledb-schema
+  ingress: []
+  egress:
+    # DNS
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    # TimescaleDB
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: platform
+            app.kubernetes.io/name: timescaledb
       toPorts:
         - ports:
             - port: "5432"
