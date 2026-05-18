@@ -79,10 +79,6 @@ roleRef:
 
 # ─── BUILDS NAMESPACE RBAC ────────────────────────────────────────────────────
 
-# TODO: pods/exec is required because build-service currently streams source
-# into build pods and runs build commands via the K8s exec API. When we migrate
-# to S3-based builds (source downloaded by InitContainer, build output uploaded
-# by sidecar), remove pods/exec from this role.
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -95,9 +91,6 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["create", "get", "list", "watch", "delete"]
-  - apiGroups: [""]
-    resources: ["pods/exec"]
-    verbs: ["create"]
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get"]

@@ -393,6 +393,15 @@ spec:
         - ports:
             - port: "8333"
               protocol: TCP
+    # build pods — pre-signed URL source download + binary upload
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: builds
+            app.kubernetes.io/name: build
+      toPorts:
+        - ports:
+            - port: "8333"
+              protocol: TCP
 ---
 # redis: ingress from telemetry-ingester, leaderboard-ws, and kubelet probes
 apiVersion: cilium.io/v2
@@ -519,10 +528,8 @@ spec:
 # ─── BUILDS NAMESPACE ─────────────────────────────────────────────────────────
 
 ---
-# builds: default deny everything — no network during compilation
-# K8s exec channel arrives via host network stack, not pod-to-pod,
-# so build-service exec does not require an explicit allow here.
-# If exec streams are blocked in practice, add fromEntities: [host, remote-node].
+# builds: default deny all direct pod-to-pod traffic.
+# Build pods access SeaweedFS via pre-signed URLs through the policy below.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -534,6 +541,41 @@ spec:
   endpointSelector: {}
   ingress: []
   egress: []
+---
+# build pods: egress to SeaweedFS (pre-signed URL download/upload) + DNS only
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: builds-policy
+  namespace: builds
+  labels:
+    {{- include "obarena.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: build
+  ingress: []
+  egress:
+    # DNS — needed for InitContainer/main container to resolve SeaweedFS hostname in pre-signed URL
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    # SeaweedFS — pre-signed URL source download + binary upload
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: platform
+            app.kubernetes.io/name: seaweedfs
+      toPorts:
+        - ports:
+            - port: "8333"
+              protocol: TCP
 
 # ─── SANDBOXES NAMESPACE ──────────────────────────────────────────────────────
 

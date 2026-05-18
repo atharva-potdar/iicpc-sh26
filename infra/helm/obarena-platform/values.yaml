@@ -139,6 +139,7 @@ storage:
     size: 10Gi
 
   buildArtifacts:
-    # Currently unused: build-service still uses K8s exec streaming into build pods.
-    # When builds move fully to S3/object storage, this can likely be removed or reworked.
+    # Build pods download source and upload binaries via pre-signed S3 URLs.
+    # This value is not currently consumed by a PVC — SeaweedFS stores artifacts in its own volume.
+    # Retained for documentation of the expected artifact storage budget.
     size: 10Gi
