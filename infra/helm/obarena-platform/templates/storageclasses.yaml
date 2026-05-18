@@ -1,0 +1,37 @@
+{{- if .Values.storage.createStorageClasses }}
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: obarena-longhorn-ephemeral
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "false"
+provisioner: driver.longhorn.io
+allowVolumeExpansion: true
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+parameters:
+  # EDIT THIS when you want replication later.
+  # "1" = single replica only; if the node dies, the volume is gone.
+  # For stronger durability, increase to "2" or "3".
+  numberOfReplicas: "1"
+  staleReplicaTimeout: "30"
+  fsType: "ext4"
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: obarena-longhorn-db
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "false"
+provisioner: driver.longhorn.io
+allowVolumeExpansion: true
+reclaimPolicy: Retain
+volumeBindingMode: Immediate
+parameters:
+  # EDIT THIS when you want replication later.
+  # Keep at "1" for now to minimize overhead.
+  # Increase this for TimescaleDB first if/when durability matters more.
+  numberOfReplicas: "1"
+  staleReplicaTimeout: "30"
+  fsType: "ext4"
+{{- end }}

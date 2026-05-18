@@ -7,7 +7,11 @@ ingress:
   host: obarena-platform.local # Update to actual domain for prod
 
 storage:
-  className: "gp3" # Standard for AWS EKS
+  createStorageClasses: false
+  # Set these to your cloud provider's native StorageClass in production.
+  # Example on AWS EKS: "gp3"
+  seaweedfsStorageClass: ""
+  timescaledbStorageClass: ""
 
 redpanda:
   devMode: false # Turn off dev flags for more robust redpanda behavior

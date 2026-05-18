@@ -22,3 +22,9 @@ sandboxOrchestrator:
   # Match prod: equal integer values for Guaranteed QoS + static CPU pinning.
   sandboxCpuRequest: "2"
   sandboxCpuLimit: "2"
+
+storage:
+  createStorageClasses: true
+  seaweedfsStorageClass: obarena-longhorn-ephemeral
+  timescaledbStorageClass: obarena-longhorn-db
+

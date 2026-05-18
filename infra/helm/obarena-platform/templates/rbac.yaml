@@ -1,3 +1,5 @@
+# ─── SERVICE ACCOUNTS ─────────────────────────────────────────────────────────
+
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -21,6 +23,10 @@ metadata:
   namespace: platform
   labels:
     {{- include "obarena.labels" . | nindent 4 }}
+
+# ─── SANDBOXES NAMESPACE RBAC ─────────────────────────────────────────────────
+
+# Used by both sandbox-orchestrator (create/manage) and bot-orchestrator (cleanup after test)
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -37,6 +43,7 @@ rules:
     resources: ["pods/log"]
     verbs: ["get"]
 ---
+# sandbox-orchestrator needs this to create sandbox pods and wait for readiness
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
@@ -52,6 +59,30 @@ roleRef:
   kind: Role
   name: sandbox-pod-manager
   apiGroup: rbac.authorization.k8s.io
+---
+# bot-orchestrator needs this to delete sandbox pods after test completion
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: bot-orchestrator-sandbox-cleanup
+  namespace: sandboxes
+  labels:
+    {{- include "obarena.labels" . | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: bot-orchestrator
+    namespace: platform
+roleRef:
+  kind: Role
+  name: sandbox-pod-manager
+  apiGroup: rbac.authorization.k8s.io
+
+# ─── BUILDS NAMESPACE RBAC ────────────────────────────────────────────────────
+
+# TODO: pods/exec is required because build-service currently streams source
+# into build pods and runs build commands via the K8s exec API. When we migrate
+# to S3-based builds (source downloaded by InitContainer, build output uploaded
+# by sidecar), remove pods/exec from this role.
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -86,6 +117,9 @@ roleRef:
   kind: Role
   name: build-pod-manager
   apiGroup: rbac.authorization.k8s.io
+
+# ─── BOTS NAMESPACE RBAC ──────────────────────────────────────────────────────
+
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -119,20 +153,4 @@ subjects:
 roleRef:
   kind: Role
   name: bot-job-manager
-  apiGroup: rbac.authorization.k8s.io
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: bot-orchestrator-sandbox-cleanup
-  namespace: sandboxes
-  labels:
-    {{- include "obarena.labels" . | nindent 4 }}
-subjects:
-  - kind: ServiceAccount
-    name: bot-orchestrator
-    namespace: platform
-roleRef:
-  kind: Role
-  name: sandbox-pod-manager
   apiGroup: rbac.authorization.k8s.io

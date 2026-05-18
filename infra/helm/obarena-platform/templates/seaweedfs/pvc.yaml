@@ -7,8 +7,9 @@ metadata:
     {{- include "obarena.labels" . | nindent 4 }}
 spec:
   accessModes: [ReadWriteOnce]
-  {{- if .Values.storage.className }}
-  storageClassName: {{ .Values.storage.className }}
+  {{- $sc := .Values.storage.seaweedfsStorageClass | default .Values.storage.className }}
+  {{- if $sc }}
+  storageClassName: {{ $sc | quote }}
   {{- end }}
   resources:
     requests:

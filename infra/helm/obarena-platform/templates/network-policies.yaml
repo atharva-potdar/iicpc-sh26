@@ -1,196 +1,666 @@
 {{- if .Values.networkPolicies.enabled }}
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
+
+# ─── PLATFORM NAMESPACE ───────────────────────────────────────────────────────
+
+# Default deny all ingress and egress for platform namespace
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
 metadata:
-  name: default-deny-egress
-  namespace: builds
-  labels:
-    {{- include "obarena.labels" . | nindent 4 }}
-spec:
-  podSelector: {}
-  policyTypes: [Egress]
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: sandboxes-ingress
-  namespace: sandboxes
-  labels:
-    {{- include "obarena.labels" . | nindent 4 }}
-spec:
-  podSelector: {}
-  policyTypes: [Ingress]
-  ingress:
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: bots
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: sandboxes-egress
-  namespace: sandboxes
-  labels:
-    {{- include "obarena.labels" . | nindent 4 }}
-spec:
-  podSelector: {}
-  policyTypes: [Egress]
-  egress:
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-      ports:
-        - protocol: UDP
-          port: 53
-        - protocol: TCP
-          port: 53
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: platform
-          podSelector:
-            matchLabels:
-              app.kubernetes.io/name: seaweedfs
-      ports:
-        - protocol: TCP
-          port: 8333
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: restrict-egress
-  namespace: bots
-  labels:
-    {{- include "obarena.labels" . | nindent 4 }}
-spec:
-  podSelector: {}
-  policyTypes: [Egress]
-  egress:
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: sandboxes
-      ports:
-        - protocol: TCP
-          port: 8080
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: platform
-          podSelector:
-            matchLabels:
-              app.kubernetes.io/name: redpanda
-      ports:
-        - protocol: TCP
-          port: 9092
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-      ports:
-        - protocol: UDP
-          port: 53
-        - protocol: TCP
-          port: 53
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: platform-egress
+  name: platform-default-deny
   namespace: platform
   labels:
     {{- include "obarena.labels" . | nindent 4 }}
 spec:
-  podSelector: {}
-  policyTypes: [Egress]
+  endpointSelector: {}
+  ingress: []
+  egress: []
+---
+# submission-api: inbound from internet + kubelet probes, outbound to Redpanda + SeaweedFS + DNS
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: submission-api
+  namespace: platform
+  labels:
+    {{- include "obarena.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: submission-api
+  ingress:
+    - fromEntities:
+        - world
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    # Kubelet readiness/liveness probes
+    - fromEntities:
+        - host
+        - remote-node
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
   egress:
     # DNS
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-      ports:
-        - protocol: UDP
-          port: 53
-        - protocol: TCP
-          port: 53
-    # Kubernetes API — scoped to k0s default service CIDR only
-    - to:
-        - ipBlock:
-            cidr: 10.96.0.0/12
-      ports:
-        - protocol: TCP
-          port: 443
-        - protocol: TCP
-          port: 6443
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
     # Redpanda
-    - to:
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/name: redpanda
-      ports:
-        - protocol: TCP
-          port: 9092
-        - protocol: TCP
-          port: 9644
-    # Redis
-    - to:
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/name: redis
-      ports:
-        - protocol: TCP
-          port: 6379
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: platform
+            app.kubernetes.io/name: redpanda
+      toPorts:
+        - ports:
+            - port: "9092"
+              protocol: TCP
+    # SeaweedFS — presigned URL generation
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: platform
+            app.kubernetes.io/name: seaweedfs
+      toPorts:
+        - ports:
+            - port: "8333"
+              protocol: TCP
+---
+# build-service: no HTTP server — egress only to Redpanda + SeaweedFS + K8s API + DNS
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: build-service
+  namespace: platform
+  labels:
+    {{- include "obarena.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: build-service
+  ingress: []
+  egress:
+    # DNS
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    # Redpanda
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: platform
+            app.kubernetes.io/name: redpanda
+      toPorts:
+        - ports:
+            - port: "9092"
+              protocol: TCP
+    # SeaweedFS — source download + binary upload
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: platform
+            app.kubernetes.io/name: seaweedfs
+      toPorts:
+        - ports:
+            - port: "8333"
+              protocol: TCP
+    # Kubernetes API — build pod exec/create/delete in builds namespace
+    - toEntities:
+        - kube-apiserver
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
+---
+# sandbox-orchestrator: no HTTP server — egress only to Redpanda + SeaweedFS + K8s API + DNS
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: sandbox-orchestrator
+  namespace: platform
+  labels:
+    {{- include "obarena.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: sandbox-orchestrator
+  ingress: []
+  egress:
+    # DNS
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    # Redpanda
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: platform
+            app.kubernetes.io/name: redpanda
+      toPorts:
+        - ports:
+            - port: "9092"
+              protocol: TCP
+    # SeaweedFS — presigned URL generation for sandbox InitContainer
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: platform
+            app.kubernetes.io/name: seaweedfs
+      toPorts:
+        - ports:
+            - port: "8333"
+              protocol: TCP
+    # Kubernetes API — sandbox pod create/delete in sandboxes namespace
+    - toEntities:
+        - kube-apiserver
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
+---
+# bot-orchestrator: inbound kubelet probes only, outbound to Redpanda + K8s API + DNS
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: bot-orchestrator
+  namespace: platform
+  labels:
+    {{- include "obarena.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: bot-orchestrator
+  ingress:
+    # Kubelet readiness/liveness probes
+    - fromEntities:
+        - host
+        - remote-node
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+  egress:
+    # DNS
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    # Redpanda
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: platform
+            app.kubernetes.io/name: redpanda
+      toPorts:
+        - ports:
+            - port: "9092"
+              protocol: TCP
+    # Kubernetes API — bot Job create/delete in bots, sandbox pod delete in sandboxes
+    - toEntities:
+        - kube-apiserver
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP
+---
+# telemetry-ingester: inbound kubelet probes, outbound to Redpanda + TimescaleDB + Redis + DNS
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: telemetry-ingester
+  namespace: platform
+  labels:
+    {{- include "obarena.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: telemetry-ingester
+  ingress:
+    # Kubelet readiness/liveness probes
+    - fromEntities:
+        - host
+        - remote-node
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+  egress:
+    # DNS
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    # Redpanda
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: platform
+            app.kubernetes.io/name: redpanda
+      toPorts:
+        - ports:
+            - port: "9092"
+              protocol: TCP
     # TimescaleDB
-    - to:
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/name: timescaledb
-      ports:
-        - protocol: TCP
-          port: 5432
-    # SeaweedFS
-    - to:
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/name: seaweedfs
-      ports:
-        - protocol: TCP
-          port: 9333
-        - protocol: TCP
-          port: 8080
-        - protocol: TCP
-          port: 8333
-    # builds — K8s exec only (platform manages build pods via API, no direct pod traffic)
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: builds
-      ports:
-        - protocol: TCP
-          port: 443
-        - protocol: TCP
-          port: 6443
-    # sandboxes — K8s API only
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: sandboxes
-      ports:
-        - protocol: TCP
-          port: 443
-        - protocol: TCP
-          port: 6443
-    # bots — K8s API only
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: bots
-      ports:
-        - protocol: TCP
-          port: 443
-        - protocol: TCP
-          port: 6443
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: platform
+            app.kubernetes.io/name: timescaledb
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+    # Redis
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: platform
+            app.kubernetes.io/name: redis
+      toPorts:
+        - ports:
+            - port: "6379"
+              protocol: TCP
+---
+# leaderboard-ws: inbound from internet + kubelet probes, outbound to Redis + DNS
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: leaderboard-ws
+  namespace: platform
+  labels:
+    {{- include "obarena.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: leaderboard-ws
+  ingress:
+    - fromEntities:
+        - world
+      toPorts:
+        - ports:
+            - port: "8090"
+              protocol: TCP
+    # Kubelet readiness/liveness probes
+    - fromEntities:
+        - host
+        - remote-node
+      toPorts:
+        - ports:
+            - port: "8090"
+              protocol: TCP
+  egress:
+    # DNS
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    # Redis
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: platform
+            app.kubernetes.io/name: redis
+      toPorts:
+        - ports:
+            - port: "6379"
+              protocol: TCP
+---
+# seaweedfs: ingress from submission-api, build-service, sandbox-orchestrator,
+# sandbox InitContainers, and kubelet probes
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: seaweedfs-ingress
+  namespace: platform
+  labels:
+    {{- include "obarena.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: seaweedfs
+  ingress:
+    # Kubelet readiness/liveness probes
+    - fromEntities:
+        - host
+        - remote-node
+      toPorts:
+        - ports:
+            - port: "8333"
+              protocol: TCP
+    # submission-api — presigned URL generation
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: platform
+            app.kubernetes.io/name: submission-api
+      toPorts:
+        - ports:
+            - port: "8333"
+              protocol: TCP
+    # build-service — source download + binary upload
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: platform
+            app.kubernetes.io/name: build-service
+      toPorts:
+        - ports:
+            - port: "8333"
+              protocol: TCP
+    # sandbox-orchestrator — presigned URL generation for InitContainer
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: platform
+            app.kubernetes.io/name: sandbox-orchestrator
+      toPorts:
+        - ports:
+            - port: "8333"
+              protocol: TCP
+    # sandbox InitContainer — binary download
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: sandboxes
+            app.kubernetes.io/name: sandbox
+      toPorts:
+        - ports:
+            - port: "8333"
+              protocol: TCP
+---
+# redis: ingress from telemetry-ingester, leaderboard-ws, and kubelet probes
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: redis-ingress
+  namespace: platform
+  labels:
+    {{- include "obarena.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+  ingress:
+    # Kubelet readiness/liveness probes
+    - fromEntities:
+        - host
+        - remote-node
+      toPorts:
+        - ports:
+            - port: "6379"
+              protocol: TCP
+    # telemetry-ingester — leaderboard writes + pub/sub publish
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: platform
+            app.kubernetes.io/name: telemetry-ingester
+      toPorts:
+        - ports:
+            - port: "6379"
+              protocol: TCP
+    # leaderboard-ws — leaderboard reads + pub/sub subscribe
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: platform
+            app.kubernetes.io/name: leaderboard-ws
+      toPorts:
+        - ports:
+            - port: "6379"
+              protocol: TCP
+---
+# timescaledb: ingress from telemetry-ingester and kubelet probes only
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: timescaledb-ingress
+  namespace: platform
+  labels:
+    {{- include "obarena.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: timescaledb
+  ingress:
+    # Kubelet readiness/liveness probes
+    - fromEntities:
+        - host
+        - remote-node
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+    # telemetry-ingester — telemetry_events and submission_scores writes
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: platform
+            app.kubernetes.io/name: telemetry-ingester
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+---
+# redpanda: ingress from platform services, KEDA, bot-runner Jobs, and kubelet probes
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: redpanda-ingress
+  namespace: platform
+  labels:
+    {{- include "obarena.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: redpanda
+  ingress:
+    # Kubelet readiness/liveness probes
+    - fromEntities:
+        - host
+        - remote-node
+      toPorts:
+        - ports:
+            - port: "9092"
+              protocol: TCP
+            - port: "9644"
+              protocol: TCP
+    # All platform services — produce/consume
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: platform
+      toPorts:
+        - ports:
+            - port: "9092"
+              protocol: TCP
+            - port: "9644"
+              protocol: TCP
+    # KEDA operator — consumer lag polling for ScaledObjects
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: keda
+      toPorts:
+        - ports:
+            - port: "9092"
+              protocol: TCP
+    # bot-runner Jobs — publish bot.metrics from bots namespace
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: bots
+            app.kubernetes.io/name: bot-runner
+      toPorts:
+        - ports:
+            - port: "9092"
+              protocol: TCP
+
+# ─── BUILDS NAMESPACE ─────────────────────────────────────────────────────────
+
+---
+# builds: default deny everything — no network during compilation
+# K8s exec channel arrives via host network stack, not pod-to-pod,
+# so build-service exec does not require an explicit allow here.
+# If exec streams are blocked in practice, add fromEntities: [host, remote-node].
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: builds-default-deny
+  namespace: builds
+  labels:
+    {{- include "obarena.labels" . | nindent 4 }}
+spec:
+  endpointSelector: {}
+  ingress: []
+  egress: []
+
+# ─── SANDBOXES NAMESPACE ──────────────────────────────────────────────────────
+
+---
+# sandboxes: default deny all
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: sandboxes-default-deny
+  namespace: sandboxes
+  labels:
+    {{- include "obarena.labels" . | nindent 4 }}
+spec:
+  endpointSelector: {}
+  ingress: []
+  egress: []
+---
+# sandbox pods: ingress from bot-runner + kubelet probes, egress to SeaweedFS + DNS
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: sandboxes-policy
+  namespace: sandboxes
+  labels:
+    {{- include "obarena.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: sandbox
+  ingress:
+    # bot-runner Jobs — WebSocket load test traffic
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: bots
+            app.kubernetes.io/name: bot-runner
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    # Kubelet readiness probe — sandbox-orchestrator blocks on Ready before publishing sandbox.ready
+    - fromEntities:
+        - host
+        - remote-node
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+  egress:
+    # DNS — needed for InitContainer wget to resolve SeaweedFS hostname
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    # SeaweedFS — InitContainer binary download only
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: platform
+            app.kubernetes.io/name: seaweedfs
+      toPorts:
+        - ports:
+            - port: "8333"
+              protocol: TCP
+
+# ─── BOTS NAMESPACE ───────────────────────────────────────────────────────────
+
+---
+# bots: default deny all
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: bots-default-deny
+  namespace: bots
+  labels:
+    {{- include "obarena.labels" . | nindent 4 }}
+spec:
+  endpointSelector: {}
+  ingress: []
+  egress: []
+---
+# bot-runner Jobs: egress to sandboxes (WebSocket) + Redpanda (metrics) + DNS
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: bot-runner
+  namespace: bots
+  labels:
+    {{- include "obarena.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: bot-runner
+  ingress: []
+  egress:
+    # DNS
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    # Sandboxes — WebSocket load test traffic
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: sandboxes
+            app.kubernetes.io/name: sandbox
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+    # Redpanda — publish bot.metrics
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: platform
+            app.kubernetes.io/name: redpanda
+      toPorts:
+        - ports:
+            - port: "9092"
+              protocol: TCP
+
 {{- end }}

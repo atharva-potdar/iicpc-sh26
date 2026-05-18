@@ -119,7 +119,26 @@ ingress:
   host: obarena.example.com
 
 storage:
-  className: "" # Empty means cluster default
-  seaweedfs:      { size: 10Gi }
-  timescaledb:    { size: 10Gi }
-  buildArtifacts: { size: 10Gi }
+  # Deprecated fallback. Prefer the per-service fields below.
+  # If set, this is used only when seaweedfsStorageClass / timescaledbStorageClass are empty.
+  className: ""
+
+  # Set to true only in environments where this chart should create Longhorn-backed
+  # StorageClasses itself (e.g. local k0s dev). Leave false in cloud/prod and point
+  # the PVCs at the provider-native StorageClass instead.
+  createStorageClasses: false
+
+  # Explicit per-workload storage classes.
+  seaweedfsStorageClass: ""
+  timescaledbStorageClass: ""
+
+  seaweedfs:
+    size: 10Gi
+
+  timescaledb:
+    size: 10Gi
+
+  buildArtifacts:
+    # Currently unused: build-service still uses K8s exec streaming into build pods.
+    # When builds move fully to S3/object storage, this can likely be removed or reworked.
+    size: 10Gi
