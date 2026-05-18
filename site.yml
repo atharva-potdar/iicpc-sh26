@@ -1,0 +1,251 @@
+---
+- name: Install k0s + Cilium
+  hosts: k0s_controller
+  become: true
+  gather_facts: true
+
+  vars:
+    # Resolved at runtime — works on bare metal and cloud alike
+    node_ip: "{{ ansible_facts['default_ipv4']['address'] }}"
+
+  tasks:
+
+    # ─── k0s binary ──────────────────────────────────────────────────────────
+
+    - name: Download k0s install script
+      ansible.builtin.get_url:
+        url: https://get.k0s.sh
+        dest: /tmp/get-k0s.sh
+        mode: '0755'
+
+    - name: Run k0s install script
+      ansible.builtin.command: /tmp/get-k0s.sh
+      args:
+        creates: /usr/local/bin/k0s
+
+    - name: Verify k0s binary
+      ansible.builtin.command: k0s version
+      register: k0s_ver
+      changed_when: false
+
+    - name: Show k0s version
+      ansible.builtin.debug:
+        msg: "{{ k0s_ver.stdout }}"
+
+    # ─── k0s config ──────────────────────────────────────────────────────────
+
+    - name: Create k0s config directory
+      ansible.builtin.file:
+        path: /etc/k0s
+        state: directory
+        mode: '0755'
+
+    - name: Write k0s config
+      ansible.builtin.copy:
+        dest: "{{ k0s_config_path }}"
+        mode: '0644'
+        content: |
+          apiVersion: k0s.k0sproject.io/v1beta1
+          kind: ClusterConfig
+          metadata:
+            name: k0s
+          spec:
+            network:
+              provider: custom
+              kubeProxy:
+                disabled: true
+              podCIDR: {{ pod_cidr }}
+              serviceCIDR: {{ service_cidr }}
+
+    # ─── k0s service ─────────────────────────────────────────────────────────
+
+    - name: Install k0s as a systemd service
+      ansible.builtin.command: >
+        k0s install controller
+        --enable-worker
+        --no-taints
+        --config {{ k0s_config_path }}
+      args:
+        creates: /etc/systemd/system/k0scontroller.service
+
+    - name: Start and enable k0s service
+      ansible.builtin.systemd:
+        name: k0scontroller
+        state: started
+        enabled: true
+        daemon_reload: true
+
+    - name: Wait for k0s API server to become reachable
+      ansible.builtin.wait_for:
+        host: "{{ node_ip }}"
+        port: 6443
+        delay: 10
+        timeout: 120
+        state: started
+
+    - name: Wait for k0s to report healthy
+      ansible.builtin.command: k0s status
+      register: k0s_status
+      until: "'Kube-api probing successful: true' in k0s_status.stdout"
+      retries: 18
+      delay: 10
+      changed_when: false
+
+    # ─── kubeconfig ──────────────────────────────────────────────────────────
+
+    - name: Create .kube directory for root
+      ansible.builtin.file:
+        path: /root/.kube
+        state: directory
+        mode: '0700'
+
+    - name: Export kubeconfig for root
+      ansible.builtin.shell: k0s kubeconfig admin > /root/.kube/config
+      args:
+        creates: /root/.kube/config
+
+    - name: Set kubeconfig permissions
+      ansible.builtin.file:
+        path: /root/.kube/config
+        mode: '0600'
+
+    # Export kubeconfig for the non-root ansible user as well
+    - name: Create .kube directory for ansible user
+      ansible.builtin.file:
+        path: "/home/{{ ansible_user }}/.kube"
+        state: directory
+        mode: '0700'
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+      when: ansible_user is defined and ansible_user != 'root'
+
+    - name: Copy kubeconfig for ansible user
+      ansible.builtin.copy:
+        src: /root/.kube/config
+        dest: "/home/{{ ansible_user }}/.kube/config"
+        remote_src: true
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: '0600'
+      when: ansible_user is defined and ansible_user != 'root'
+
+    # ─── Helm ────────────────────────────────────────────────────────────────
+
+    - name: Check if Helm is already installed
+      ansible.builtin.command: helm version --short
+      register: helm_check
+      ignore_errors: true
+      changed_when: false
+
+    - name: Install Helm
+      when: helm_check.rc != 0
+      block:
+        - name: Set Helm archive name
+          ansible.builtin.set_fact:
+            helm_arch: >-
+              {{
+                'arm64' if ansible_architecture == 'aarch64'
+                else 'amd64'
+              }}
+
+        - name: Download Helm archive
+          ansible.builtin.get_url:
+            url: "https://get.helm.sh/helm-{{ helm_version }}-linux-{{ helm_arch | trim }}.tar.gz"
+            dest: /tmp/helm.tar.gz
+            mode: '0644'
+
+        - name: Extract Helm binary
+          ansible.builtin.unarchive:
+            src: /tmp/helm.tar.gz
+            dest: /tmp
+            remote_src: true
+
+        - name: Install Helm binary
+          ansible.builtin.copy:
+            src: "/tmp/linux-{{ helm_arch | trim }}/helm"
+            dest: "{{ helm_install_dir }}/helm"
+            remote_src: true
+            mode: '0755'
+
+        - name: Clean up Helm temp files
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - /tmp/helm.tar.gz
+            - "/tmp/linux-{{ helm_arch | trim }}"
+
+    # ─── Cilium ──────────────────────────────────────────────────────────────
+
+    - name: Add Cilium Helm repository
+      ansible.builtin.command: helm repo add cilium https://helm.cilium.io/
+      environment:
+        KUBECONFIG: /root/.kube/config
+      register: helm_repo_add
+      changed_when: "'already exists' not in helm_repo_add.stdout"
+
+    - name: Update Helm repositories
+      ansible.builtin.command: helm repo update
+      environment:
+        KUBECONFIG: /root/.kube/config
+      changed_when: false
+
+    - name: Check if Cilium is already installed
+      ansible.builtin.command: helm status cilium -n {{ cilium_namespace }}
+      environment:
+        KUBECONFIG: /root/.kube/config
+      register: cilium_status
+      ignore_errors: true
+      changed_when: false
+
+    - name: Install Cilium
+      ansible.builtin.command: >
+        helm install cilium cilium/cilium
+        --version {{ cilium_version }}
+        --namespace {{ cilium_namespace }}
+        --set kubeProxyReplacement=true
+        --set k8sServiceHost={{ node_ip }}
+        --set k8sServicePort=6443
+        --set routingMode=tunnel
+        --set tunnelProtocol=vxlan
+        --set ipam.mode=cluster-pool
+        --set ipam.operator.clusterPoolIPv4PodCIDRList='{{ "{" }}{{ pod_cidr }}{{ "}" }}'
+        --set hubble.enabled=true
+        --set hubble.relay.enabled=true
+      environment:
+        KUBECONFIG: /root/.kube/config
+      when: cilium_status.rc != 0
+      changed_when: true
+
+    # ─── Verify ──────────────────────────────────────────────────────────────
+
+    - name: Wait for Cilium daemonset to be ready
+      ansible.builtin.command: >
+        kubectl rollout status daemonset/cilium
+        -n {{ cilium_namespace }}
+        --timeout=300s
+      environment:
+        KUBECONFIG: /root/.kube/config
+      changed_when: false
+
+    - name: Wait for node to become Ready
+      ansible.builtin.command: >
+        kubectl wait node --all
+        --for=condition=Ready
+        --timeout=300s
+      environment:
+        KUBECONFIG: /root/.kube/config
+      changed_when: false
+
+    - name: Check Cilium status
+      ansible.builtin.command: >
+        kubectl -n {{ cilium_namespace }}
+        exec ds/cilium -- cilium status
+      environment:
+        KUBECONFIG: /root/.kube/config
+      register: cilium_final_status
+      changed_when: false
+
+    - name: Show Cilium status
+      ansible.builtin.debug:
+        msg: "{{ cilium_final_status.stdout_lines }}"
