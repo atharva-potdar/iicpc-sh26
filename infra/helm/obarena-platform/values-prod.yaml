@@ -8,8 +8,7 @@ ingress:
 
 storage:
   createStorageClasses: false
-  # Set these to your cloud provider's native StorageClass in production.
-  # Example on AWS EKS: "gp3"
+  # Set each below to your cloud provider's StorageClass (e.g. "gp3" on AWS EKS) before deploying
   seaweedfsStorageClass: ""
   timescaledbStorageClass: ""
 
