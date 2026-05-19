@@ -95,6 +95,11 @@ func (o *Orchestrator) runTest(ctx context.Context, event SandboxReadyEvent) err
 			Completions:             &completions,
 			Parallelism:             &parallelism,
 			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						"app.kubernetes.io/name": "bot-runner",
+					},
+				},
 				Spec: corev1.PodSpec{
 					RestartPolicy: corev1.RestartPolicyNever,
 					Containers: []corev1.Container{

@@ -23,7 +23,7 @@ import (
 
 const (
 	sandboxNamespace = "sandboxes"
-	binaryBucket     = "builds"
+	binaryBucket     = "submissions"
 	sandboxImage     = "alpine:3.23"
 	httpPort         = 8080
 )
@@ -278,8 +278,9 @@ func (o *Orchestrator) createSandboxPod(ctx context.Context, name string, binary
 			Name:      name,
 			Namespace: sandboxNamespace,
 			Labels: map[string]string{
-				"app":  "sandbox",
-				"role": "contestant-submission",
+				"app":                    "sandbox",
+				"app.kubernetes.io/name": "sandbox",
+				"role":                   "contestant-submission",
 			},
 		},
 		Spec: podSpec,

@@ -40,8 +40,7 @@ func (w *limitWriter) Write(p []byte) (int, error) {
 
 const (
 	buildNamespace = "builds"
-	srcBucket      = "submissions"
-	binaryBucket   = "builds"
+	srcBucket = "submissions"
 )
 
 var buildImages = map[string]string{
@@ -50,12 +49,15 @@ var buildImages = map[string]string{
 	"go":   "golang:1.26-alpine",
 }
 
-// buildCommands returns the shell command to build in /workspace, produce /workspace/binary,
-// and upload the binary to the pre-signed PUT URL.
+// buildCommands compiles the submission binary to /workspace/binary.
+// Upload is handled by the upload-binary init container that runs after.
 var buildCommands = map[string]string{
-	"cpp":  `g++ -static -O2 -o /workspace/binary /workspace/main.cpp && wget -q --method=PUT --body-file=/workspace/binary "$BINARY_UPLOAD_URL"`,
-	"rust": `cd /workspace && RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --offline && cp $(find target/release -maxdepth 1 -type f -perm -111 ! -name '*.d' | head -1) /workspace/binary && wget -q --method=PUT --body-file=/workspace/binary "$BINARY_UPLOAD_URL"`,
-	"go":   `cd /workspace && CGO_ENABLED=0 go build -mod=vendor -o /workspace/binary . && wget -q --method=PUT --body-file=/workspace/binary "$BINARY_UPLOAD_URL"`,
+	"cpp": `g++ -static -O2 -o /workspace/binary /workspace/main.cpp`,
+
+	"rust": `cd /workspace && RUSTFLAGS="-C target-feature=+crt-static" cargo build --release --offline && ` +
+		`cp $(find target/release -maxdepth 1 -type f -perm -111 ! -name '*.d' | head -1) /workspace/binary`,
+
+	"go": `cd /workspace && CGO_ENABLED=0 go build -mod=vendor -o /workspace/binary .`,
 }
 
 // BuildResult is returned on successful build.
@@ -108,9 +110,13 @@ func NewBuilder(seaweedfsEndpoint string, maxLogBytes int) (*Builder, error) {
 // Build runs the full build lifecycle for a submission:
 //  1. Generate pre-signed URL for downloading source tar.gz from SeaweedFS
 //  2. Generate pre-signed URL for uploading compiled binary to SeaweedFS
-//  3. Create build pod (InitContainer downloads/extracts, Main Container builds/uploads)
+//  3. Create build pod:
+//     - download-source init container: fetches and extracts source
+//     - build init container: compiles to /workspace/binary
+//     - upload-binary init container: PUTs binary to SeaweedFS via presigned URL
+//     - done container: no-op placeholder (K8s requires >= 1 non-init container)
 //  4. Watch the pod until completion (Success/Failure)
-//  5. Read logs on failure, return failure reason
+//  5. Read logs from the failed container on failure
 //  6. Cleanup the pod
 func (b *Builder) Build(ctx context.Context, event SubmissionCreatedEvent) (*BuildResult, error) {
 	image, ok := buildImages[event.Language]
@@ -152,7 +158,6 @@ func (b *Builder) Build(ctx context.Context, event SubmissionCreatedEvent) (*Bui
 	// 4. Watch pod to completion
 	slog.Info("watching build pod", "pod", podName)
 	if err := b.waitForPodCompletion(podCtx, pod.Name, pod.ResourceVersion); err != nil {
-		// Read container logs on failure
 		logCtx, logCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer logCancel()
 		logs, logErr := b.readPodLogs(logCtx, podName)
@@ -168,6 +173,24 @@ func (b *Builder) Build(ctx context.Context, event SubmissionCreatedEvent) (*Bui
 }
 
 func (b *Builder) createBuildPod(ctx context.Context, name, image, buildCmd, sourceURL, binaryUploadURL string) (*corev1.Pod, error) {
+	secctx := func() *corev1.SecurityContext {
+		return &corev1.SecurityContext{
+			RunAsUser:                ptr[int64](65534),
+			RunAsNonRoot:             ptr(true),
+			ReadOnlyRootFilesystem:   ptr(true),
+			AllowPrivilegeEscalation: ptr(false),
+			Capabilities: &corev1.Capabilities{
+				Drop: []corev1.Capability{"ALL"},
+			},
+			SeccompProfile: &corev1.SeccompProfile{
+				Type: corev1.SeccompProfileTypeRuntimeDefault,
+			},
+			AppArmorProfile: &corev1.AppArmorProfile{
+				Type: corev1.AppArmorProfileTypeRuntimeDefault,
+			},
+		}
+	}
+
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -181,9 +204,10 @@ func (b *Builder) createBuildPod(ctx context.Context, name, image, buildCmd, sou
 		Spec: corev1.PodSpec{
 			RestartPolicy: corev1.RestartPolicyNever,
 			InitContainers: []corev1.Container{
+				// 1. download-source: fetches and extracts the submission source tarball.
 				{
-					Name:  "download-source",
-					Image: "alpine:3.23",
+					Name:    "download-source",
+					Image:   "alpine:3.23",
 					Command: []string{"sh", "-c"},
 					Args: []string{
 						`wget -q -O /workspace/source.tar.gz "$SOURCE_URL" && ` +
@@ -193,28 +217,13 @@ func (b *Builder) createBuildPod(ctx context.Context, name, image, buildCmd, sou
 					Env: []corev1.EnvVar{
 						{Name: "SOURCE_URL", Value: sourceURL},
 					},
-					SecurityContext: &corev1.SecurityContext{
-						RunAsUser:                ptr[int64](65534),
-						RunAsNonRoot:             ptr(true),
-						ReadOnlyRootFilesystem:   ptr(true),
-						AllowPrivilegeEscalation: ptr(false),
-						Capabilities: &corev1.Capabilities{
-							Drop: []corev1.Capability{"ALL"},
-						},
-						SeccompProfile: &corev1.SeccompProfile{
-							Type: corev1.SeccompProfileTypeRuntimeDefault,
-						},
-						AppArmorProfile: &corev1.AppArmorProfile{
-							Type: corev1.AppArmorProfileTypeRuntimeDefault,
-						},
-					},
+					SecurityContext: secctx(),
 					VolumeMounts: []corev1.VolumeMount{
 						{Name: "workspace", MountPath: "/workspace"},
 						{Name: "tmp", MountPath: "/tmp"},
 					},
 				},
-			},
-			Containers: []corev1.Container{
+				// 2. build: compiles the submission to /workspace/binary.
 				{
 					Name:       "build",
 					Image:      image,
@@ -222,25 +231,10 @@ func (b *Builder) createBuildPod(ctx context.Context, name, image, buildCmd, sou
 					Args:       []string{buildCmd},
 					WorkingDir: "/workspace",
 					Env: []corev1.EnvVar{
-						{Name: "BINARY_UPLOAD_URL", Value: binaryUploadURL},
 						{Name: "GOCACHE", Value: "/tmp/go-build-cache"},
 						{Name: "GOPATH", Value: "/tmp/go-path"},
 					},
-					SecurityContext: &corev1.SecurityContext{
-						RunAsUser:                ptr[int64](65534),
-						RunAsNonRoot:             ptr(true),
-						ReadOnlyRootFilesystem:   ptr(true),
-						AllowPrivilegeEscalation: ptr(false),
-						Capabilities: &corev1.Capabilities{
-							Drop: []corev1.Capability{"ALL"},
-						},
-						SeccompProfile: &corev1.SeccompProfile{
-							Type: corev1.SeccompProfileTypeRuntimeDefault,
-						},
-						AppArmorProfile: &corev1.AppArmorProfile{
-							Type: corev1.AppArmorProfileTypeRuntimeDefault,
-						},
-					},
+					SecurityContext: secctx(),
 					VolumeMounts: []corev1.VolumeMount{
 						{Name: "workspace", MountPath: "/workspace"},
 						{Name: "tmp", MountPath: "/tmp"},
@@ -255,6 +249,38 @@ func (b *Builder) createBuildPod(ctx context.Context, name, image, buildCmd, sou
 							corev1.ResourceMemory: resource.MustParse("512Mi"),
 						},
 					},
+				},
+				// 3. upload-binary: PUTs /workspace/binary to SeaweedFS via presigned URL.
+				// Uses alpine/curl which ships curl on Alpine without needing apk install.
+				{
+					Name:    "upload-binary",
+					Image:   "alpine/curl:8.9.1",
+					Command: []string{"sh", "-c"},
+					Args: []string{
+						`curl -sS -f -X PUT \
+  -H "Content-Type: application/octet-stream" \
+  -T /workspace/binary \
+  --max-time 60 \
+  "$BINARY_UPLOAD_URL" \
+  && echo "upload: ok" || { echo "upload failed"; exit 1; }`,
+					},
+					Env: []corev1.EnvVar{
+						{Name: "BINARY_UPLOAD_URL", Value: binaryUploadURL},
+					},
+					SecurityContext: secctx(),
+					VolumeMounts: []corev1.VolumeMount{
+						{Name: "workspace", MountPath: "/workspace"},
+						{Name: "tmp", MountPath: "/tmp"},
+					},
+				},
+			},
+			// Kubernetes requires at least one non-init container.
+			Containers: []corev1.Container{
+				{
+					Name:            "done",
+					Image:           "alpine:3.23",
+					Command:         []string{"true"},
+					SecurityContext: secctx(),
 				},
 			},
 			Volumes: []corev1.Volume{
@@ -309,8 +335,22 @@ func (b *Builder) waitForPodCompletion(ctx context.Context, name, resourceVersio
 }
 
 func (b *Builder) readPodLogs(ctx context.Context, name string) (string, error) {
+	// Check which container failed so we read the right logs.
+	// If an init container failed the subsequent containers never started.
+	pod, err := b.k8sClient.CoreV1().Pods(buildNamespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return "", fmt.Errorf("get pod: %w", err)
+	}
+	container := "done"
+	for _, cs := range pod.Status.InitContainerStatuses {
+		if cs.State.Terminated != nil && cs.State.Terminated.ExitCode != 0 {
+			container = cs.Name
+			break
+		}
+	}
+
 	req := b.k8sClient.CoreV1().Pods(buildNamespace).GetLogs(name, &corev1.PodLogOptions{
-		Container: "build",
+		Container: container,
 	})
 	stream, err := req.Stream(ctx)
 	if err != nil {

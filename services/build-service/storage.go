@@ -28,7 +28,7 @@ func (b *Builder) GeneratePresignedGetURL(ctx context.Context, key string, expir
 func (b *Builder) GeneratePresignedPutURL(ctx context.Context, key string, expiry time.Duration) (string, error) {
 	presignClient := s3.NewPresignClient(b.s3Client)
 	req, err := presignClient.PresignPutObject(ctx, &s3.PutObjectInput{
-		Bucket: aws.String(binaryBucket),
+		Bucket: aws.String(srcBucket),
 		Key:    aws.String(key),
 	}, func(opts *s3.PresignOptions) {
 		opts.Expires = expiry

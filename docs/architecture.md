@@ -31,9 +31,8 @@ flowchart LR
     J -->|read + subscribe| K[leaderboard-ws]
     K -->|WebSocket| L[Browser Frontend]
 
-    D -->|creates| P[build pod]
-    P -->|S3 GET source| M
-    P -->|S3 PUT binary| N[(SeaweedFS\nbuilds bucket)]
+    D -->|S3 GET| M
+    D -->|S3 PUT| N[(SeaweedFS\nbuilds bucket)]
     E -->|S3 GET| N
     I -->|batch insert| O[(TimescaleDB)]
 ```
@@ -69,7 +68,7 @@ flowchart LR
 | Namespace | Contents | Network Policy |
 |-----------|----------|----------------|
 | `platform` | All services, Redpanda, Redis, TimescaleDB, SeaweedFS | Default deny egress; explicit allow for DNS, K8s API, Redpanda, Redis, TimescaleDB, SeaweedFS, and all other namespaces |
-| `builds` | Build pods (ephemeral) | Egress allowed to DNS (53) and SeaweedFS (8333) only |
+| `builds` | Build pods (ephemeral) | Default deny egress (no network during compilation) |
 | `sandboxes` | Sandbox pods (ephemeral) | Ingress from `bots` only; egress to SeaweedFS only |
 | `bots` | Bot runner Jobs (ephemeral) | Egress to `sandboxes`, `platform` (Redpanda only), and DNS |
 
@@ -77,7 +76,6 @@ flowchart LR
 
 ```
 platform services → builds namespace    : K8s API (create/manage build pods)
-builds namespace → platform namespace  : SeaweedFS (source download & binary upload, build pods only)
 platform services → sandboxes namespace : K8s API (create/manage sandbox pods)
 platform services → bots namespace      : K8s API (create/manage bot Jobs)
 bots namespace → sandboxes namespace    : WebSocket (load test traffic)
@@ -107,13 +105,7 @@ Every sandbox pod (running contestant code) enforces:
 
 | Control | Configuration |
 |---------|--------------|
-| Network | Egress allowed to DNS and SeaweedFS only |
-| User | `runAsUser: 65534` (nobody), `runAsNonRoot: true` |
-| Privilege escalation | `allowPrivilegeEscalation: false` |
-| Filesystem | `readOnlyRootFilesystem: true` |
-| Capabilities | `drop: ["ALL"]` |
-| Seccomp | `type: RuntimeDefault` |
-| AppArmor | `type: RuntimeDefault` |
+| Network | Default deny egress (no internet access) |
 | Workspace | EmptyDir with 512Mi limit |
 | Restart | `Never` |
 
@@ -131,22 +123,19 @@ Every sandbox pod (running contestant code) enforces:
 |---------------|-----------|------|-------|-------------|
 | `sandbox-orchestrator` | platform | `sandbox-pod-manager` | `sandboxes` | pods: create/get/list/watch/delete, pods/log: get |
 | `build-service` | platform | `build-pod-manager` | `builds` | pods: create/get/list/watch/delete, pods/log: get |
-| `bot-orchestrator` | platform | `bot-job-manager` | `bots` | jobs: create/get/list/watch/delete, pods: get/list/watch, pods/log: get |
-| `sandbox-orchestrator` | platform | `sandbox-pod-manager` | `sandboxes` | pods: create/get/list/watch/delete |
-| `build-service` | platform | `build-pod-manager` | `builds` | pods: create/get/list/watch/delete |
-| `bot-orchestrator` | platform | `bot-job-manager` | `bots` | jobs: create/get/list/watch/delete, pods: get/list/watch |
-| `bot-orchestrator` | platform | `sandbox-pod-manager` | `sandboxes` | pods: create/get/list/watch/delete (sandbox teardown after test) |
+| `bot-orchestrator` | platform | `bot-job-manager` | `bots` | jobs: create/watch/delete |
+| `bot-orchestrator` | platform | `sandbox-pod-manager` | `sandboxes` | pods: create/get/list/watch/delete, pods/log: get (sandbox teardown after test) |
 
 ## Data Flow
 
 ```
 Source Code (tar.gz)
-  - client requests pre-signed URL from submission-api and uploads directly to SeaweedFS (submissions bucket)
-  - build-service generates pre-signed GET/PUT URLs
-  - build pod InitContainer downloads source via pre-signed GET URL
-  - build pod compiles and uploads binary via pre-signed PUT URL
-  - sandbox-orchestrator downloads binary via InitContainer
-  - sandbox pod executes binary
+  → client requests pre-signed URL from submission-api and uploads directly to SeaweedFS (submissions bucket)
+  → build-service downloads from SeaweedFS
+  → build-service compiles in isolated pod
+  → build-service uploads binary to SeaweedFS (builds bucket)
+  → sandbox-orchestrator downloads binary via InitContainer
+  → sandbox pod executes binary
 
 Metrics
   → bot-runner measures latency (hdrhistogram) and throughput
@@ -172,4 +161,4 @@ Metrics
 |--------|------|---------|
 | SeaweedFS | 10Gi | Source artifacts + compiled binaries |
 | TimescaleDB | 10Gi | Telemetry events + submission scores |
-| Build artifacts | 10Gi | SeaweedFS builds bucket PVC — compiled binaries stored here after build pod compiles and uploads |
+| Build artifacts | 10Gi | SeaweedFS builds bucket PVC — compiled binaries stored here after build-service compiles |

@@ -13,9 +13,13 @@ metadata:
 spec:
   endpointSelector: {}
   ingress:
-    - {}
+    - fromEndpoints:
+        - matchLabels:
+            cilium-default-deny: "true"
   egress:
-    - {}
+    - toEndpoints:
+        - matchLabels:
+            cilium-default-deny: "true"
 ---
 # submission-api: inbound from internet + kubelet probes, outbound to Redpanda + SeaweedFS + DNS
 apiVersion: cilium.io/v2
@@ -227,43 +231,6 @@ spec:
             - port: "6443"
               protocol: TCP
 ---
-# redpanda-topics: egress to Redpanda + DNS
-apiVersion: cilium.io/v2
-kind: CiliumNetworkPolicy
-metadata:
-  name: redpanda-topics
-  namespace: platform
-  labels:
-    {{- include "obarena.labels" . | nindent 4 }}
-spec:
-  endpointSelector:
-    matchLabels:
-      app.kubernetes.io/name: redpanda-topics
-  ingress: []
-  egress:
-    # DNS
-    - toEndpoints:
-        - matchLabels:
-            k8s:io.kubernetes.pod.namespace: kube-system
-            k8s-app: kube-dns
-      toPorts:
-        - ports:
-            - port: "53"
-              protocol: UDP
-            - port: "53"
-              protocol: TCP
-    # Redpanda
-    - toEndpoints:
-        - matchLabels:
-            k8s:io.kubernetes.pod.namespace: platform
-            app.kubernetes.io/name: redpanda
-      toPorts:
-        - ports:
-            - port: "9092"
-              protocol: TCP
-            - port: "9644"
-              protocol: TCP
----
 # telemetry-ingester: inbound kubelet probes, outbound to Redpanda + TimescaleDB + Redis + DNS
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
@@ -375,7 +342,8 @@ spec:
               protocol: TCP
 ---
 # seaweedfs: ingress from submission-api, build-service, sandbox-orchestrator,
-# sandbox InitContainers, and kubelet probes
+# sandbox InitContainers, build pods, and kubelet probes.
+# Port 8080 is the volume server — the filer on 8333 redirects PUT/GET to it.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -398,16 +366,7 @@ spec:
               protocol: TCP
             - port: "9333"
               protocol: TCP
-    # seaweedfs-init Job — bucket creation and status check
-    - fromEndpoints:
-        - matchLabels:
-            k8s:io.kubernetes.pod.namespace: platform
-            app.kubernetes.io/name: seaweedfs-init
-      toPorts:
-        - ports:
-            - port: "8333"
-              protocol: TCP
-            - port: "9333"
+            - port: "8080"
               protocol: TCP
     # submission-api — presigned URL generation
     - fromEndpoints:
@@ -436,7 +395,7 @@ spec:
         - ports:
             - port: "8333"
               protocol: TCP
-    # sandbox InitContainer — binary download
+    # sandbox pods — binary download (InitContainer wget + volume server redirect)
     - fromEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: sandboxes
@@ -445,7 +404,9 @@ spec:
         - ports:
             - port: "8333"
               protocol: TCP
-    # build pods — pre-signed URL source download + binary upload
+            - port: "8080"
+              protocol: TCP
+    # build pods — source download + binary upload (curl + volume server redirect)
     - fromEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: builds
@@ -454,12 +415,26 @@ spec:
         - ports:
             - port: "8333"
               protocol: TCP
+            - port: "8080"
+              protocol: TCP
+    # seaweedfs-init hook — wait-for-seaweedfs polls master health on 9333,
+    # create-buckets hits S3 API on 8333
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: platform
+            app.kubernetes.io/name: seaweedfs-init
+      toPorts:
+        - ports:
+            - port: "8333"
+              protocol: TCP
+            - port: "9333"
+              protocol: TCP
 ---
-# seaweedfs-init: egress to SeaweedFS + DNS
+# seaweedfs-init hook: egress to SeaweedFS (9333 health + 8333 bucket creation) + DNS
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
-  name: seaweedfs-init-egress
+  name: seaweedfs-init
   namespace: platform
   labels:
     {{- include "obarena.labels" . | nindent 4 }}
@@ -480,7 +455,7 @@ spec:
               protocol: UDP
             - port: "53"
               protocol: TCP
-    # SeaweedFS
+    # SeaweedFS — 9333 master health check, 8333 S3 bucket creation
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: platform
@@ -490,6 +465,78 @@ spec:
             - port: "8333"
               protocol: TCP
             - port: "9333"
+              protocol: TCP
+---
+# redpanda-topics hook: egress to Redpanda (9644 health + 9092 rpk) + DNS
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: redpanda-topics
+  namespace: platform
+  labels:
+    {{- include "obarena.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: redpanda-topics
+  ingress: []
+  egress:
+    # DNS
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    # Redpanda — 9644 REST health check, 9092 rpk topic creation
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: platform
+            app.kubernetes.io/name: redpanda
+      toPorts:
+        - ports:
+            - port: "9092"
+              protocol: TCP
+            - port: "9644"
+              protocol: TCP
+---
+# timescaledb-schema hook: egress to TimescaleDB (5432) + DNS
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: timescaledb-schema
+  namespace: platform
+  labels:
+    {{- include "obarena.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: timescaledb-schema
+  ingress: []
+  egress:
+    # DNS
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+    # TimescaleDB — pg_isready health check + psql schema application
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: platform
+            app.kubernetes.io/name: timescaledb
+      toPorts:
+        - ports:
+            - port: "5432"
               protocol: TCP
 ---
 # redis: ingress from telemetry-ingester, leaderboard-ws, and kubelet probes
@@ -562,46 +609,11 @@ spec:
         - ports:
             - port: "5432"
               protocol: TCP
-    # timescaledb-schema Job — schema initialization
+    # timescaledb-schema hook — pg_isready health check + psql schema migrations
     - fromEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: platform
             app.kubernetes.io/name: timescaledb-schema
-      toPorts:
-        - ports:
-            - port: "5432"
-              protocol: TCP
----
-# timescaledb-schema: egress to TimescaleDB + DNS
-apiVersion: cilium.io/v2
-kind: CiliumNetworkPolicy
-metadata:
-  name: timescaledb-schema-egress
-  namespace: platform
-  labels:
-    {{- include "obarena.labels" . | nindent 4 }}
-spec:
-  endpointSelector:
-    matchLabels:
-      app.kubernetes.io/name: timescaledb-schema
-  ingress: []
-  egress:
-    # DNS
-    - toEndpoints:
-        - matchLabels:
-            k8s:io.kubernetes.pod.namespace: kube-system
-            k8s-app: kube-dns
-      toPorts:
-        - ports:
-            - port: "53"
-              protocol: UDP
-            - port: "53"
-              protocol: TCP
-    # TimescaleDB
-    - toEndpoints:
-        - matchLabels:
-            k8s:io.kubernetes.pod.namespace: platform
-            app.kubernetes.io/name: timescaledb
       toPorts:
         - ports:
             - port: "5432"
@@ -662,7 +674,6 @@ spec:
 
 ---
 # builds: default deny all direct pod-to-pod traffic.
-# Build pods access SeaweedFS via pre-signed URLs through the policy below.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -672,10 +683,18 @@ metadata:
     {{- include "obarena.labels" . | nindent 4 }}
 spec:
   endpointSelector: {}
-  ingress: []
-  egress: []
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            cilium-default-deny: "true"
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            cilium-default-deny: "true"
 ---
-# build pods: egress to SeaweedFS (pre-signed URL download/upload) + DNS only
+# build pods: egress to SeaweedFS + DNS.
+# Port 8080 is required because the SeaweedFS filer on 8333 redirects
+# PUT (binary upload) and GET (source download) to the volume server on 8080.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -689,7 +708,7 @@ spec:
       app.kubernetes.io/name: build
   ingress: []
   egress:
-    # DNS — needed for InitContainer/main container to resolve SeaweedFS hostname in pre-signed URL
+    # DNS
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: kube-system
@@ -700,7 +719,7 @@ spec:
               protocol: UDP
             - port: "53"
               protocol: TCP
-    # SeaweedFS — pre-signed URL source download + binary upload
+    # SeaweedFS — filer (8333) + volume server (8080)
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: platform
@@ -708,6 +727,8 @@ spec:
       toPorts:
         - ports:
             - port: "8333"
+              protocol: TCP
+            - port: "8080"
               protocol: TCP
 
 # ─── SANDBOXES NAMESPACE ──────────────────────────────────────────────────────
@@ -723,10 +744,18 @@ metadata:
     {{- include "obarena.labels" . | nindent 4 }}
 spec:
   endpointSelector: {}
-  ingress: []
-  egress: []
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            cilium-default-deny: "true"
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            cilium-default-deny: "true"
 ---
-# sandbox pods: ingress from bot-runner + kubelet probes, egress to SeaweedFS + DNS
+# sandbox pods: ingress from bot-runner + kubelet probes, egress to SeaweedFS + DNS.
+# Port 8080 is required because the SeaweedFS filer on 8333 redirects
+# GET (binary download in InitContainer) to the volume server on 8080.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
@@ -748,7 +777,7 @@ spec:
         - ports:
             - port: "8080"
               protocol: TCP
-    # Kubelet readiness probe — sandbox-orchestrator blocks on Ready before publishing sandbox.ready
+    # Kubelet readiness probe
     - fromEntities:
         - host
         - remote-node
@@ -757,7 +786,7 @@ spec:
             - port: "8080"
               protocol: TCP
   egress:
-    # DNS — needed for InitContainer wget to resolve SeaweedFS hostname
+    # DNS
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: kube-system
@@ -768,7 +797,7 @@ spec:
               protocol: UDP
             - port: "53"
               protocol: TCP
-    # SeaweedFS — InitContainer binary download only
+    # SeaweedFS — filer (8333) + volume server (8080)
     - toEndpoints:
         - matchLabels:
             k8s:io.kubernetes.pod.namespace: platform
@@ -776,6 +805,8 @@ spec:
       toPorts:
         - ports:
             - port: "8333"
+              protocol: TCP
+            - port: "8080"
               protocol: TCP
 
 # ─── BOTS NAMESPACE ───────────────────────────────────────────────────────────
@@ -791,8 +822,14 @@ metadata:
     {{- include "obarena.labels" . | nindent 4 }}
 spec:
   endpointSelector: {}
-  ingress: []
-  egress: []
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            cilium-default-deny: "true"
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            cilium-default-deny: "true"
 ---
 # bot-runner Jobs: egress to sandboxes (WebSocket) + Redpanda (metrics) + DNS
 apiVersion: cilium.io/v2

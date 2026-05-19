@@ -77,6 +77,7 @@ prefetch:
     # Cilium CNI (v1.19.4)
     sudo k0s ctr -n k8s.io images pull quay.io/cilium/cilium:v1.19.4
     sudo k0s ctr -n k8s.io images pull quay.io/cilium/operator-generic:v1.19.4
+    sudo k0s ctr -n k8s.io images pull docker.io/alpine/curl:8.9.1
 
 infra-up:
     bash scripts/infra-up.sh
@@ -85,9 +86,15 @@ smoke-test:
     bash scripts/smoke-test.sh
 
 dev-teardown:
-    helm uninstall obarena-platform --namespace platform || true
+    helm uninstall obarena-platform --namespace platform --wait --timeout 120s || true
     helm uninstall keda --namespace keda || true
+    k0s kubectl delete apiservice v1beta1.external.metrics.k8s.io || true
     k0s kubectl delete namespace platform builds sandboxes bots keda || true
+    @echo "==> Waiting for namespaces to fully terminate..."
+    @for ns in platform builds sandboxes bots keda; do \
+        k0s kubectl wait --for=delete namespace/$$ns --timeout=120s 2>/dev/null || true; \
+    done
+    @echo "==> Teardown complete"
 
 clean-cache:
     docker image prune -a -f
@@ -96,3 +103,18 @@ clean-cache:
 clean-cache-all:
     docker image prune -a -f
     sudo k0s crictl rmi --all
+
+port-forward:
+    @echo "==> Starting port forwards in background..."
+    k0s kubectl port-forward -n platform svc/submission-api 8080:8080 > /dev/null 2>&1 & echo $$! > .pf_submission
+    k0s kubectl port-forward -n platform svc/seaweedfs 8333:8333 > /dev/null 2>&1 & echo $$! > .pf_seaweedfs
+    k0s kubectl port-forward -n platform svc/leaderboard-ws 8090:8090 > /dev/null 2>&1 & echo $$! > .pf_leaderboard
+    @echo "==> Port forwards active: 8080 (submission), 8333 (S3), 8090 (leaderboard)"
+
+stop-port-forward:
+    @echo "==> Stopping port forwards..."
+    -kill `cat .pf_submission 2>/dev/null` 2>/dev/null || true
+    -kill `cat .pf_seaweedfs 2>/dev/null` 2>/dev/null || true
+    -kill `cat .pf_leaderboard 2>/dev/null` 2>/dev/null || true
+    rm -f .pf_submission .pf_seaweedfs .pf_leaderboard
+    @echo "==> Port forwards stopped"
